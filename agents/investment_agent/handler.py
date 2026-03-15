@@ -1,13 +1,11 @@
 """
 Investment Agent — Wall Street-style research and portfolio ideas.
-
-Monitors: undervalued stocks, healthcare AI, earnings surprises, macro trends.
 """
 
 import os
 import time
 import requests
-from anthropic import Anthropic
+from core.llm import chat
 
 SYSTEM = """You are Justin Ngai's personal Wall Street research analyst.
 
@@ -15,7 +13,6 @@ Justin's profile:
 - Risk tolerance: moderate
 - Sectors of interest: healthcare AI, biotechnology, small-cap value
 - Style: long-term value with growth catalysts
-- Dislikes: pure speculation, meme stocks, highly leveraged companies
 
 When analyzing, provide:
 **[Company / Ticker]**
@@ -30,7 +27,6 @@ Keep it concise — Justin reads this on his phone."""
 SEARCH_QUERIES = [
     "undervalued healthcare AI stocks 2026 earnings growth",
     "small cap biotech catalyst upcoming FDA approval 2026",
-    "hedge fund 13F healthcare technology conviction buys 2026",
     "value stock below book value healthcare sector 2026",
 ]
 
@@ -56,26 +52,17 @@ def search(query: str) -> list:
 
 
 def handle(message: str) -> str:
-    client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-
     if "scan" in message.lower() or message.strip() == "":
         all_results = []
-        for q in SEARCH_QUERIES[:3]:
+        for q in SEARCH_QUERIES[:2]:
             all_results.extend(search(q))
             time.sleep(0.3)
-
         context = "\n\n".join(
             f"TITLE: {r['title']}\nURL: {r['url']}\nSUMMARY: {r['description']}"
-            for r in all_results[:20]
+            for r in all_results[:15]
         )
-        prompt = f"Identify the top 3 investment opportunities from these signals:\n\n{context}"
+        prompt = f"Identify top investment opportunities from these signals:\n\n{context}" if context else message
     else:
         prompt = message
 
-    resp = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=800,
-        system=SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return resp.content[0].text
+    return chat(SYSTEM, prompt, max_tokens=800)

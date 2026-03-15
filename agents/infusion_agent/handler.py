@@ -1,15 +1,10 @@
 """
-Infusion Agent — wraps the existing infusion-agent at ../infusion-agent/agent.py
-Handles consulting questions, lead intelligence, and speaking opportunity analysis.
+Infusion Agent — hospital infusion operations consulting, leads, speaking opps.
 """
 
-import os
-import sys
-from pathlib import Path
-from anthropic import Anthropic
+from core.llm import chat
 
-# Pull in the system prompt from the existing standalone agent
-INFUSION_SYSTEM = """You are the personal intelligence and advisory agent for Justin Ngai,
+SYSTEM = """You are the personal intelligence and advisory agent for Justin Ngai,
 an independent Hospital Infusion Operations consultant.
 
 JUSTIN'S PROFILE:
@@ -29,12 +24,4 @@ Keep answers concise for a mobile interface. Flag HIGH/MEDIUM/LOW priority."""
 
 
 def handle(message: str) -> str:
-    """Answer an infusion consulting question."""
-    client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    resp = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=800,
-        system=INFUSION_SYSTEM,
-        messages=[{"role": "user", "content": message}],
-    )
-    return resp.content[0].text
+    return chat(SYSTEM, message, max_tokens=800)

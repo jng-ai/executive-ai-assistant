@@ -3,8 +3,7 @@ Command Router — classifies incoming user messages and routes to the right age
 """
 
 import json
-import os
-from anthropic import Anthropic
+from core.llm import chat
 
 ROUTER_PROMPT = """You are the command router for Justin Ngai's personal executive AI assistant.
 
@@ -30,19 +29,17 @@ If multiple intents fit, pick the most specific one."""
 
 def classify(message: str) -> dict:
     """Classify a user message into a structured intent."""
-    client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    raw = chat(ROUTER_PROMPT, message, max_tokens=256)
 
-    resp = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=256,
-        system=ROUTER_PROMPT,
-        messages=[{"role": "user", "content": message}],
-    )
-
-    raw = resp.content[0].text.strip()
+    # Strip markdown fences if model wraps in ```json
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    raw = raw.strip()
 
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        # Fallback if model returns something unexpected
         return {"intent": "general_question", "details": message, "params": {}}
