@@ -17,11 +17,13 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
 def check_env():
-    required = ["ANTHROPIC_API_KEY", "TELEGRAM_BOT_TOKEN"]
+    provider = os.environ.get("LLM_PROVIDER", "groq").lower()
+    llm_key = {"groq": "GROQ_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}.get(provider)
+    required = ["TELEGRAM_BOT_TOKEN"] + ([llm_key] if llm_key else [])
     missing = [k for k in required if not os.environ.get(k)]
     if missing:
         print(f"Missing required env vars: {', '.join(missing)}")
-        print("Copy .env.example to .env and fill in your keys.")
+        print("Edit your .env file and fill in the missing keys.")
         sys.exit(1)
 
 def run_bot():
