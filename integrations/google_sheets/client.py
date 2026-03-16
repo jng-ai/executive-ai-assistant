@@ -1,105 +1,55 @@
 """
-Google Sheets integration — syncs finance tracker data to Justin's spreadsheet.
+Google Sheets integration — uses Google Apps Script Web App (100% free).
+No billing, no service account, no Google Cloud Console needed.
 
-Setup:
-1. Go to console.cloud.google.com → create project → enable Google Sheets API
-2. Create Service Account → download JSON key → save as credentials/google_service_account.json
-3. Share your Google Sheet with the service account email (Editor access)
-4. Add GOOGLE_SHEETS_BONUS_ID=<spreadsheet_id> to .env
-   (Sheet ID is the long string in the URL: docs.google.com/spreadsheets/d/<ID>/edit)
-
-Tabs expected in your sheet:
-- "CC Bonuses"   : credit card signup bonus tracker
-- "Bank Bonuses" : bank account bonus tracker
-- "Budget"       : monthly expense log (optional)
+Setup (one time, ~2 minutes):
+1. Open your Google Sheet
+2. Extensions → Apps Script
+3. Paste the contents of scripts/google_apps_script.js into the editor
+4. Click Deploy → New Deployment → Web App
+   - Execute as: Me
+   - Who has access: Anyone
+5. Click Deploy → copy the Web App URL
+6. Add to .env:  GOOGLE_SHEETS_WEBHOOK_URL=https://script.google.com/macros/s/YOUR_ID/exec
 """
 
 import os
 import json
 import datetime
-from pathlib import Path
 
-CREDENTIALS_FILE = Path(__file__).parent.parent.parent / "credentials" / "google_service_account.json"
-
-
-def _get_client():
-    """Return authenticated gspread client, or None if not configured."""
-    try:
-        import gspread
-        from google.oauth2.service_account import Credentials
-
-        if not CREDENTIALS_FILE.exists():
-            return None
-
-        scope = [
-            "https://spreadsheets.google.com/feeds",
-            "https://www.googleapis.com/auth/drive",
-        ]
-        creds = Credentials.from_service_account_file(str(CREDENTIALS_FILE), scopes=scope)
-        return gspread.authorize(creds)
-    except ImportError:
-        return None
-    except Exception as e:
-        print(f"Google Sheets auth error: {e}")
-        return None
+try:
+    import requests as _requests
+except ImportError:
+    _requests = None
 
 
 def is_configured() -> bool:
-    """Check if Google Sheets is ready to use."""
-    return (
-        CREDENTIALS_FILE.exists()
-        and bool(os.environ.get("GOOGLE_SHEETS_BONUS_ID"))
-    )
+    return bool(os.environ.get("GOOGLE_SHEETS_WEBHOOK_URL"))
 
 
-def _get_spreadsheet():
-    """Open the bonus tracker spreadsheet."""
-    gc = _get_client()
-    if not gc:
-        return None
-    sheet_id = os.environ.get("GOOGLE_SHEETS_BONUS_ID", "")
-    if not sheet_id:
-        return None
+def _post(payload: dict) -> bool:
+    """POST JSON payload to the Apps Script webhook."""
+    if not _requests:
+        return False
+    url = os.environ.get("GOOGLE_SHEETS_WEBHOOK_URL", "")
+    if not url:
+        return False
     try:
-        return gc.open_by_key(sheet_id)
+        resp = _requests.post(url, json=payload, timeout=10)
+        return resp.status_code == 200
     except Exception as e:
-        print(f"Google Sheets open error: {e}")
-        return None
-
-
-def _ensure_tab(spreadsheet, tab_name: str, headers: list):
-    """Get or create a worksheet tab with headers."""
-    try:
-        ws = spreadsheet.worksheet(tab_name)
-    except Exception:
-        ws = spreadsheet.add_worksheet(title=tab_name, rows=1000, cols=20)
-        ws.append_row(headers, value_input_option="USER_ENTERED")
-    return ws
-
-
-# ── Public functions ───────────────────────────────────────────────────────────
-
-def append_bonus_row(entry: dict) -> bool:
-    """
-    Add a row to the CC Bonuses or Bank Bonuses tab.
-
-    entry dict keys: card_or_bank, type, date_logged, status, bonus_amount,
-                     min_spend, annual_fee, re_eligibility, notes
-    """
-    spreadsheet = _get_spreadsheet()
-    if not spreadsheet:
+        print(f"Google Sheets webhook error: {e}")
         return False
 
-    try:
-        bonus_type = entry.get("type", "credit_card")
-        tab_name = "CC Bonuses" if bonus_type == "credit_card" else "Bank Bonuses"
-        headers = [
-            "Card / Bank", "Bonus", "Date Applied", "Min Spend",
-            "Annual Fee", "Re-Eligibility", "Status", "Notes", "Source"
-        ]
-        ws = _ensure_tab(spreadsheet, tab_name, headers)
 
-        row = [
+def append_bonus_row(entry: dict) -> bool:
+    """Add a row to the CC Bonuses or Bank Bonuses tab."""
+    bonus_type = entry.get("type", "credit_card")
+    tab = "CC Bonuses" if bonus_type == "credit_card" else "Bank Bonuses"
+    return _post({
+        "action": "append",
+        "tab": tab,
+        "row": [
             entry.get("card_or_bank", ""),
             entry.get("bonus_amount", ""),
             entry.get("date_logged", datetime.date.today().isoformat()),
@@ -109,54 +59,40 @@ def append_bonus_row(entry: dict) -> bool:
             entry.get("status", "received"),
             entry.get("note", entry.get("notes", "")),
             entry.get("source", ""),
-        ]
-        ws.append_row(row, value_input_option="USER_ENTERED")
-        return True
-    except Exception as e:
-        print(f"Google Sheets append error: {e}")
-        return False
+        ],
+        "headers": [
+            "Card / Bank", "Bonus", "Date", "Min Spend",
+            "Annual Fee", "Re-Eligibility", "Status", "Notes", "Source"
+        ],
+    })
 
 
 def append_budget_row(entry: dict) -> bool:
     """Add a row to the Budget tab."""
-    spreadsheet = _get_spreadsheet()
-    if not spreadsheet:
-        return False
-
-    try:
-        headers = ["Date", "Type", "Amount", "Category", "Description"]
-        ws = _ensure_tab(spreadsheet, "Budget", headers)
-
-        row = [
+    return _post({
+        "action": "append",
+        "tab": "Budget",
+        "row": [
             entry.get("date", datetime.date.today().isoformat()),
             entry.get("type", "expense"),
             entry.get("amount", 0),
             entry.get("category", "other"),
             entry.get("description", ""),
-        ]
-        ws.append_row(row, value_input_option="USER_ENTERED")
-        return True
-    except Exception as e:
-        print(f"Google Sheets budget append error: {e}")
-        return False
+        ],
+        "headers": ["Date", "Type", "Amount", "Category", "Description"],
+    })
 
 
 def read_bonus_tracker() -> dict:
-    """
-    Read current tracker data from the spreadsheet.
-    Returns: {"cc_bonuses": [...rows...], "bank_bonuses": [...rows...]}
-    """
-    spreadsheet = _get_spreadsheet()
-    if not spreadsheet:
+    """Read the bonus tracker from Google Sheets."""
+    if not is_configured():
         return {}
-
-    result = {}
-    for tab_name, key in [("CC Bonuses", "cc_bonuses"), ("Bank Bonuses", "bank_bonuses")]:
-        try:
-            ws = spreadsheet.worksheet(tab_name)
-            records = ws.get_all_records()
-            result[key] = records
-        except Exception:
-            result[key] = []
-
-    return result
+    try:
+        url = os.environ.get("GOOGLE_SHEETS_WEBHOOK_URL", "") + "?action=read"
+        if _requests:
+            resp = _requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception:
+        pass
+    return {}
