@@ -91,6 +91,60 @@ def _analyze_food_image(image_b64: str, caption: str = "") -> str:
         return f"⚠️ Couldn't analyze photo: {e}\n\nTip: describe your meal in text instead."
 
 
+# ── Voice message handler ────────────────────────────────────────────────────
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Transcribe a voice message with Groq Whisper, then process as text."""
+    await update.message.reply_text("🎙 Transcribing...")
+
+    # Download the OGG voice file
+    voice = update.message.voice
+    file = await context.bot.get_file(voice.file_id)
+
+    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+        await file.download_to_drive(tmp.name)
+        transcript = await asyncio.to_thread(_transcribe_audio, tmp.name)
+
+    if not transcript:
+        await update.message.reply_text("⚠️ Couldn't transcribe. Try typing it instead.")
+        return
+
+    # Show what was heard, then process like a text message
+    await update.message.reply_text(f'🎙 _Heard: "{transcript}"_', parse_mode="Markdown")
+
+    classified = classify(transcript)
+    intent = classified.get("intent", "general_question")
+    details = classified.get("details", transcript)
+    params = classified.get("params", {})
+
+    response = await dispatch(intent, details, params, transcript)
+    if len(response) > 4000:
+        for i in range(0, len(response), 4000):
+            await update.message.reply_text(response[i:i+4000], parse_mode="Markdown")
+    else:
+        await update.message.reply_text(response, parse_mode="Markdown")
+
+
+def _transcribe_audio(file_path: str) -> str:
+    """Transcribe audio using Groq's free Whisper API."""
+    from openai import OpenAI
+    client = OpenAI(
+        api_key=os.environ.get("GROQ_API_KEY", ""),
+        base_url="https://api.groq.com/openai/v1",
+    )
+    try:
+        with open(file_path, "rb") as f:
+            resp = client.audio.transcriptions.create(
+                model="whisper-large-v3",
+                file=f,
+                response_format="text",
+            )
+        return str(resp).strip()
+    except Exception as e:
+        logger.error(f"Transcription error: {e}")
+        return ""
+
+
 # ── Text message handler ──────────────────────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -170,8 +224,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"*Executive AI Assistant online* 🤖\nChat ID: `{chat_id}`\n\n"
         "*What I can do:*\n"
-        "• `weight 174` or `slept 7.5 hours` → health log\n"
-        "• Send a food photo → auto calorie estimate\n"
+        "• Type or 🎙 voice anything — I'll figure it out\n"
+        "• 📸 Send a food photo → auto calorie estimate\n"
+        "• `weight 174` / `slept 7h` → health log\n"
         "• `Morning briefing` → daily summary\n"
         "• `NYC events` → free events this week\n"
         "• `Infusion center question` → consulting intel\n"
@@ -192,6 +247,7 @@ def run_bot():
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Bot running. Send /start to your bot in Telegram.")
