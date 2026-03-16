@@ -3,13 +3,12 @@ Investment Agent — Wall Street-style research with real market data.
 
 Data sources:
 - yfinance (free, real stock data)
-- Brave Search (news + analyst commentary)
+- Tavily (news + analyst commentary)
 """
 
-import os
 import time
-import requests
 from core.llm import chat
+from core.search import search, format_results
 
 SYSTEM = """You are Justin Ngai's personal Wall Street research analyst.
 
@@ -64,26 +63,6 @@ def get_stock_data(ticker: str) -> dict:
         return {"ticker": ticker, "error": str(e)}
 
 
-def search_news(query: str) -> list:
-    api_key = os.environ.get("BRAVE_API_KEY", "").strip()
-    if not api_key:
-        return []
-    try:
-        resp = requests.get(
-            "https://api.search.brave.com/res/v1/web/search",
-            headers={"X-Subscription-Token": api_key, "Accept": "application/json"},
-            params={"q": query, "count": 5},
-            timeout=12,
-        )
-        resp.raise_for_status()
-        return [
-            {"title": r.get("title", ""), "url": r.get("url", ""), "description": r.get("description", "")}
-            for r in resp.json().get("web", {}).get("results", [])
-        ]
-    except Exception:
-        return []
-
-
 def handle(message: str) -> str:
     msg_lower = message.lower()
 
@@ -118,13 +97,10 @@ def handle(message: str) -> str:
     # General scan — search for opportunities
     all_news = []
     for q in SEARCH_QUERIES[:2]:
-        all_news.extend(search_news(q))
+        all_news.extend(search(q, max_results=5))
         time.sleep(0.3)
 
-    news_context = "\n\n".join(
-        f"TITLE: {r['title']}\nURL: {r['url']}\nSUMMARY: {r['description']}"
-        for r in all_news[:15]
-    )
+    news_context = format_results(all_news[:15])
 
     prompt = (
         f"User request: {message}\n\n"

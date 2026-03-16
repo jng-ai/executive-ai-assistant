@@ -1,5 +1,6 @@
 """
 Mortgage Note Agent — performing first lien note deal finder and advisor.
+Uses Tavily for live marketplace searches.
 
 Justin's criteria:
 - Performing first lien notes ONLY
@@ -12,10 +13,9 @@ Non-judicial states: TX, GA, FL, NC, TN, AZ, CO, MI, VA, MO, WA, OR, NV,
                     AL, AR, CA, ID, MN, MS, MT, NE, NH, NM, OK, SD, UT, WY
 """
 
-import os
 import time
-import requests
 from core.llm import chat
+from core.search import search, format_results
 
 NON_JUDICIAL_STATES = [
     "TX", "GA", "FL", "NC", "TN", "AZ", "CO", "MI", "VA", "MO",
@@ -65,30 +65,6 @@ SEARCH_QUERIES = [
 ]
 
 
-def brave_search(query: str, count: int = 6) -> list:
-    api_key = os.environ.get("BRAVE_API_KEY", "").strip()
-    if not api_key:
-        return []
-    try:
-        resp = requests.get(
-            "https://api.search.brave.com/res/v1/web/search",
-            headers={"X-Subscription-Token": api_key, "Accept": "application/json"},
-            params={"q": query, "count": count},
-            timeout=12,
-        )
-        resp.raise_for_status()
-        return [
-            {
-                "title": r.get("title", ""),
-                "url": r.get("url", ""),
-                "description": r.get("description", ""),
-            }
-            for r in resp.json().get("web", {}).get("results", [])
-        ]
-    except Exception:
-        return []
-
-
 def handle(message: str = "") -> str:
     msg_lower = message.lower().strip()
 
@@ -110,7 +86,7 @@ def _scan_for_deals(message: str) -> str:
     all_results = []
 
     for q in SEARCH_QUERIES[:5]:
-        results = brave_search(q)
+        results = search(q, max_results=6)
         all_results.extend(results)
         time.sleep(0.3)
 
@@ -124,17 +100,14 @@ def _scan_for_deals(message: str) -> str:
     if not unique:
         return (
             "🔍 *Mortgage Note Scan*\n\n"
-            "No Brave Search key set — can't scan live listings.\n\n"
-            "Add `BRAVE_API_KEY` to your `.env` (free at brave.com/search/api)\n\n"
+            "No Tavily API key set — can't scan live listings.\n\n"
+            "Add `TAVILY_API_KEY` to your `.env` (free at app.tavily.com)\n\n"
             "In the meantime I can:\n"
             "• Underwrite a deal: `underwrite UPB $85k, asking $62k, TX, performing`\n"
             "• Draft seller outreach: `draft email to note seller on Paperstac`"
         )
 
-    context = "\n\n".join(
-        f"TITLE: {r['title']}\nURL: {r['url']}\nSUMMARY: {r['description']}"
-        for r in unique[:20]
-    )
+    context = format_results(unique[:20])
 
     state_list = ", ".join(NON_JUDICIAL_STATES)
     prompt = (

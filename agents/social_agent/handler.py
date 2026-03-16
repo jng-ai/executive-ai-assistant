@@ -3,13 +3,13 @@ NYC Social & Events Agent — finds free events, networking, and things to do.
 
 Searches: Eventbrite, Meetup, NYC.gov events, startup/finance/healthcare meetups.
 Focus: free events, networking, professional development, cultural events.
+Uses Tavily for live search.
 """
 
-import os
 import time
 import datetime
-import requests
 from core.llm import chat
+from core.search import search, format_results
 
 SYSTEM = """You are Justin Ngai's NYC social and events scout.
 
@@ -38,26 +38,6 @@ def _get_this_week_dates() -> tuple[str, str]:
     return today.strftime("%B %d"), end.strftime("%B %d")
 
 
-def search(query: str) -> list:
-    api_key = os.environ.get("BRAVE_API_KEY", "").strip()
-    if not api_key:
-        return []
-    try:
-        resp = requests.get(
-            "https://api.search.brave.com/res/v1/web/search",
-            headers={"X-Subscription-Token": api_key, "Accept": "application/json"},
-            params={"q": query, "count": 6},
-            timeout=12,
-        )
-        resp.raise_for_status()
-        return [
-            {"title": r.get("title", ""), "url": r.get("url", ""), "description": r.get("description", "")}
-            for r in resp.json().get("web", {}).get("results", [])
-        ]
-    except Exception:
-        return []
-
-
 def handle(message: str = "") -> str:
     msg_lower = message.lower()
     start, end = _get_this_week_dates()
@@ -83,7 +63,7 @@ def handle(message: str = "") -> str:
 
     all_results = []
     for q in queries[:3]:
-        all_results.extend(search(q))
+        all_results.extend(search(q, max_results=6))
         time.sleep(0.3)
 
     # Deduplicate by URL
@@ -96,15 +76,12 @@ def handle(message: str = "") -> str:
     if not unique:
         return (
             "🗓 *NYC Events*\n\n"
-            "No Brave Search key set — can't search live events.\n\n"
-            "Add `BRAVE_API_KEY` to your `.env` to enable live event search.\n"
-            "Get a free key at brave.com/search/api (2,000 searches/month free)"
+            "No Tavily API key set — can't search live events.\n\n"
+            "Add `TAVILY_API_KEY` to your `.env` to enable live event search.\n"
+            "Get a free key at app.tavily.com (1,000 searches/month free)"
         )
 
-    context = "\n\n".join(
-        f"TITLE: {r['title']}\nURL: {r['url']}\nSUMMARY: {r['description']}"
-        for r in unique[:18]
-    )
+    context = format_results(unique[:18])
 
     prompt = (
         f"Find the best free or low-cost NYC events this week ({start}–{end}) "
