@@ -9,6 +9,7 @@ Justin's targets:
 - Goal: build consistent habits, not perfection
 """
 
+import json
 import datetime
 from core.llm import chat
 from core.memory import log_health, get_health_summary
@@ -37,48 +38,49 @@ When reviewing his data:
 Keep responses short and phone-friendly. Use emojis for quick scanning."""
 
 
+PARSE_PROMPT = """Extract a health log entry from this message. Return JSON only, no commentary.
+
+If the message is a health log (weight, sleep, workout, or meal), return:
+{"is_log": true, "metric": "<weight|sleep|workout|meal>", "value": "<extracted value>", "unit": "<lbs|hours|session|food log>"}
+
+Rules:
+- weight: extract number in lbs. Example: "weighed 174" → {"metric":"weight","value":"174","unit":"lbs"}
+- sleep: calculate total hours from time range if given. "Slept 12:10am to 7:40am" = 7.5 hours. "woke up 2-3 times" is just a note, still log the total hours.
+- workout: any exercise activity. Value = description of what they did.
+- meal: only if they're describing food they ATE. NOT if they're correcting the bot or asking questions.
+
+If the message is a correction, question, or NOT a health log, return:
+{"is_log": false}
+
+Examples:
+"Slept from 12:10am to 7:40am woke up 2-3 times" → {"is_log":true,"metric":"sleep","value":"7.5","unit":"hours"}
+"weight 174" → {"is_log":true,"metric":"weight","value":"174","unit":"lbs"}
+"swam 30 mins" → {"is_log":true,"metric":"workout","value":"swam 30 mins","unit":"session"}
+"had chicken and rice" → {"is_log":true,"metric":"meal","value":"chicken and rice","unit":"food log"}
+"did you log this" → {"is_log":false}
+"It's sleep not meal" → {"is_log":false}
+"what's my progress" → {"is_log":false}"""
+
+
 def parse_log(message: str) -> dict | None:
-    """Parse natural language health log into structured data."""
-    msg = message.lower()
+    """Use LLM to intelligently parse natural language health logs."""
+    raw = chat(PARSE_PROMPT, message, max_tokens=100)
 
-    # Weight
-    for word in ["weight", "weighed", "lbs", "pounds", "scale"]:
-        if word in msg:
-            for token in msg.split():
-                try:
-                    val = float(token.replace("lbs", "").replace("lb", ""))
-                    if 100 < val < 400:
-                        return {"metric": "weight", "value": str(val), "unit": "lbs"}
-                except ValueError:
-                    continue
+    # Strip markdown fences
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    raw = raw.strip()
 
-    # Sleep
-    for word in ["sleep", "slept", "hours sleep", "hr sleep", "hrs"]:
-        if word in msg:
-            for token in msg.split():
-                try:
-                    val = float(token.replace("h", "").replace("hr", "").replace("hrs", ""))
-                    if 0 < val < 24:
-                        return {"metric": "sleep", "value": str(val), "unit": "hours"}
-                except ValueError:
-                    continue
-
-    # Meals / food
-    food_words = ["ate", "had", "breakfast", "lunch", "dinner", "meal", "calories",
-                  "cal", "protein", "carbs", "food", "ate ", "drank"]
-    for word in food_words:
-        if word in msg:
-            return {"metric": "meal", "value": message.strip(), "unit": "food log"}
-
-    # Workout
-    workout_words = ["workout", "gym", "lifted", "ran", "run", "swim", "swam",
-                     "pool", "biked", "shoulders", "chest", "legs", "back",
-                     "arms", "cardio", "hiit", "weights", "press", "squat"]
-    for word in workout_words:
-        if word in msg:
-            return {"metric": "workout", "value": message.strip(), "unit": "session"}
-
-    return None
+    try:
+        result = json.loads(raw)
+        if result.get("is_log") and result.get("metric"):
+            return result
+        return None
+    except (json.JSONDecodeError, AttributeError):
+        return None
 
 
 def handle(message: str) -> str:
