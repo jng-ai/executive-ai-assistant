@@ -113,6 +113,28 @@ DATABASES = {
             "Date":  {"date": {}},
         },
     },
+    "finance_bonuses": {
+        "title": "💳 Finance Bonuses Tracker",
+        "properties": {
+            "Type":           {"select": {"options": [
+                {"name": "credit_card", "color": "blue"},
+                {"name": "bank",        "color": "green"},
+            ]}},
+            "Bonus":          {"rich_text": {}},
+            "Min Spend":      {"rich_text": {}},
+            "Annual Fee":     {"rich_text": {}},
+            "Re-Eligibility": {"rich_text": {}},
+            "Date Received":  {"date": {}},
+            "Status":         {"select": {"options": [
+                {"name": "Tracking",  "color": "blue"},
+                {"name": "Applied",   "color": "yellow"},
+                {"name": "Received",  "color": "green"},
+                {"name": "Closed",    "color": "gray"},
+            ]}},
+            "Source": {"url": {}},
+            "Notes":  {"rich_text": {}},
+        },
+    },
 }
 
 

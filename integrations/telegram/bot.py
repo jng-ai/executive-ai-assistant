@@ -18,6 +18,7 @@ from agents.investment_agent.handler import handle as investment_handle
 from agents.travel_agent.handler import handle as travel_handle
 from agents.health_agent.handler import handle as health_handle
 from agents.social_agent.handler import handle as social_handle
+from agents.finance_agent.handler import handle as finance_handle
 from agents.general_handler import handle_general
 
 logging.basicConfig(level=logging.INFO)
@@ -192,6 +193,9 @@ async def dispatch(intent: str, details: str, params: dict, raw: str) -> str:
     elif intent == "nyc_events":
         return await asyncio.to_thread(social_handle, details)
 
+    elif intent == "personal_finance":
+        return await asyncio.to_thread(finance_handle, raw)
+
     elif intent == "daily_briefing":
         return await build_briefing()
 
@@ -232,6 +236,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `Infusion center question` → consulting intel\n"
         "• `AAPL analysis` → investment research\n"
         "• `Award flights Tokyo` → travel hacking\n"
+        "• `Best bank bonuses` → bank signup offers\n"
+        "• `Best credit card SUBs` → card signup bonuses\n"
+        "• `Amex eligibility` → check re-eligibility rules\n"
+        "• `Spent $50 groceries` → budget log\n"
         "• `Remind me to...` → task creation",
         parse_mode="Markdown",
     )

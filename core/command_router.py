@@ -18,6 +18,7 @@ Classify the user's message into one of these intent types:
 - investment_research  : stocks, portfolio, market ideas, investment analysis
 - travel_hack          : award flights, miles, travel deals, points optimization
 - nyc_events           : NYC events, meetups, networking, things to do
+- personal_finance     : bank signup bonuses, credit card SUBs, budget tracking, spending, eligibility rules, Doctor of Credit, Frequent Miler
 - daily_briefing       : morning briefing, summary, what's happening today
 - general_question     : anything else
 

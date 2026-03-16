@@ -9,3 +9,4 @@ data/*.json
 data/*.db
 *.log
 .DS_Store
+credentials/*.json
