@@ -24,15 +24,13 @@ except ImportError:
 
 
 def is_configured() -> bool:
-    return bool(os.environ.get("GOOGLE_SHEETS_WEBHOOK_URL"))
+    return bool(os.environ.get("GOOGLE_SHEETS_CC_WEBHOOK") or
+                os.environ.get("GOOGLE_SHEETS_BANK_WEBHOOK"))
 
 
-def _post(payload: dict) -> bool:
-    """POST JSON payload to the Apps Script webhook."""
-    if not _requests:
-        return False
-    url = os.environ.get("GOOGLE_SHEETS_WEBHOOK_URL", "")
-    if not url:
+def _post(url: str, payload: dict) -> bool:
+    """POST JSON payload to an Apps Script webhook."""
+    if not _requests or not url:
         return False
     try:
         resp = _requests.post(url, json=payload, timeout=10)
@@ -43,10 +41,15 @@ def _post(payload: dict) -> bool:
 
 
 def append_bonus_row(entry: dict) -> bool:
-    """Add a row to the CC Bonuses or Bank Bonuses tab."""
+    """Add a row to the CC or Bank sheet via its dedicated webhook."""
     bonus_type = entry.get("type", "credit_card")
-    tab = "CC Bonuses" if bonus_type == "credit_card" else "Bank Bonuses"
-    return _post({
+    if bonus_type == "credit_card":
+        url = os.environ.get("GOOGLE_SHEETS_CC_WEBHOOK", "")
+        tab = "CC Bonuses"
+    else:
+        url = os.environ.get("GOOGLE_SHEETS_BANK_WEBHOOK", "")
+        tab = "Bank Bonuses"
+    return _post(url, {
         "action": "append",
         "tab": tab,
         "row": [
@@ -68,8 +71,9 @@ def append_bonus_row(entry: dict) -> bool:
 
 
 def append_budget_row(entry: dict) -> bool:
-    """Add a row to the Budget tab."""
-    return _post({
+    """Add a row to the Budget tab (uses CC sheet webhook)."""
+    url = os.environ.get("GOOGLE_SHEETS_CC_WEBHOOK", "")
+    return _post(url, {
         "action": "append",
         "tab": "Budget",
         "row": [
@@ -84,15 +88,18 @@ def append_budget_row(entry: dict) -> bool:
 
 
 def read_bonus_tracker() -> dict:
-    """Read the bonus tracker from Google Sheets."""
-    if not is_configured():
+    """Read both sheets and merge results."""
+    if not _requests:
         return {}
-    try:
-        url = os.environ.get("GOOGLE_SHEETS_WEBHOOK_URL", "") + "?action=read"
-        if _requests:
-            resp = _requests.get(url, timeout=10)
+    result = {}
+    for env_var in ("GOOGLE_SHEETS_CC_WEBHOOK", "GOOGLE_SHEETS_BANK_WEBHOOK"):
+        url = os.environ.get(env_var, "")
+        if not url:
+            continue
+        try:
+            resp = _requests.get(url + "?action=read", timeout=10)
             if resp.status_code == 200:
-                return resp.json()
-    except Exception:
-        pass
-    return {}
+                result.update(resp.json())
+        except Exception:
+            pass
+    return result
