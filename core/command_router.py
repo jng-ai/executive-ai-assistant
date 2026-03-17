@@ -12,7 +12,7 @@ Classify the user's message into one of these intent types:
 - schedule_meeting     : scheduling, calendar, appointments, meetings
 - draft_email          : compose or send an email
 - create_task          : reminders, to-dos, follow-ups
-- log_health           : weight, sleep, workouts, health data
+- log_health           : weight, sleep, workouts, health data, workout suggestions, exercise routines, fitness advice, muscle group questions (e.g. "suggest a biceps workout", "give me a chest routine", "what should I do at the gym")
 - infusion_consulting  : hospital infusion ops, consulting leads, speaking opps
 - mortgage_notes       : mortgage notes, real estate, distressed notes, underwriting
 - investment_research  : stocks, portfolio, market ideas, investment analysis

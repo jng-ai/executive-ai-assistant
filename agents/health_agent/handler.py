@@ -20,7 +20,7 @@ TARGETS = {
     "workouts": {"goal": 3,    "unit": "per week", "direction": "up"},
 }
 
-SYSTEM = """You are Justin Ngai's personal health coach and habit tracker.
+SYSTEM = """You are Justin Ngai's personal health coach, trainer, and habit tracker.
 
 Justin's goals:
 - Weight: get from ~175 lbs down to 165 lbs (focus on consistency, not crash dieting)
@@ -29,7 +29,14 @@ Justin's goals:
 - Meals: track what he eats without being obsessive
 - Overall philosophy: build consistent habits, not perfection
 
-When reviewing his data:
+When Justin asks for a workout, routine, or exercise ideas:
+- Give a specific, actionable workout with sets/reps/rest
+- Tailor to his equipment (gym weights or apartment pool)
+- If he asks for a muscle group (e.g. biceps, chest, back), give a complete routine for that group
+- If no specific request, suggest something aligned with his goals (fat loss + muscle building)
+- Format clearly with exercise name, sets x reps, and one coaching tip per exercise
+
+When reviewing his health data:
 - Celebrate consistency streaks
 - Flag if he's missing workouts or sleep
 - Give ONE concrete tip for today — not a lecture
@@ -83,6 +90,13 @@ def parse_log(message: str) -> dict | None:
         return None
 
 
+WORKOUT_KEYWORDS = [
+    "suggest", "routine", "workout", "exercise", "routine", "plan", "program",
+    "bicep", "tricep", "chest", "back", "shoulder", "leg", "squat", "deadlift",
+    "pull", "push", "abs", "core", "cardio", "swim", "hiit", "how to",
+    "what should i", "what exercise", "give me a", "help me", "ideas",
+]
+
 def handle(message: str) -> str:
     msg_lower = message.lower()
 
@@ -90,6 +104,14 @@ def handle(message: str) -> str:
     if any(w in msg_lower for w in ["summary", "trend", "progress", "stats",
                                      "how am i", "report", "week", "overview", "check in"]):
         return _build_summary()
+
+    # Workout suggestion / coaching question — skip log parsing, go straight to AI
+    if any(w in msg_lower for w in WORKOUT_KEYWORDS) and not any(
+        w in msg_lower for w in ["logged", "did", "completed", "finished", "swam", "ran", "lifted"]
+    ):
+        summary_data = get_health_summary(7)
+        context = f"Justin's recent health logs (7 days):\n{summary_data}\n\nRequest: {message}"
+        return chat(SYSTEM, context, max_tokens=600)
 
     # Try to parse as a log entry
     parsed = parse_log(message)
