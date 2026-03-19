@@ -8,7 +8,19 @@ One API key serves all agents.
 import os
 import json
 import datetime
+import requests
 from pathlib import Path
+
+NOTION_VERSION = "2022-06-28"
+NOTION_BASE = "https://api.notion.com/v1"
+
+
+def _headers() -> dict:
+    return {
+        "Authorization": f"Bearer {os.environ.get('NOTION_API_KEY', '')}",
+        "Notion-Version": NOTION_VERSION,
+        "Content-Type": "application/json",
+    }
 
 DB_CACHE = Path(__file__).parent.parent.parent / "data" / "notion_db_ids.json"
 
@@ -161,12 +173,8 @@ def _save_db_ids(ids: dict):
 
 def setup_databases() -> dict:
     """Create all databases in Notion if they don't exist yet. Returns db_ids dict."""
-    notion = _get_notion()
-    if not notion:
-        return {}
-
     parent_id = os.environ.get("NOTION_PARENT_PAGE_ID", "").replace("-", "")
-    if not parent_id:
+    if not parent_id or not os.environ.get("NOTION_API_KEY"):
         return {}
 
     db_ids = _load_db_ids()
@@ -177,15 +185,21 @@ def setup_databases() -> dict:
             continue  # already exists
 
         try:
-            # Name column is always "title" type in Notion
             properties = {"Name": {"title": {}}}
             properties.update(schema["properties"])
 
-            db = notion.databases.create(
-                parent={"type": "page_id", "page_id": parent_id},
-                title=[{"type": "text", "text": {"content": schema["title"]}}],
-                properties=properties,
+            payload = {
+                "parent": {"type": "page_id", "page_id": parent_id},
+                "title": [{"type": "text", "text": {"content": schema["title"]}}],
+                "properties": properties,
+            }
+            resp = requests.post(
+                f"{NOTION_BASE}/databases",
+                headers=_headers(),
+                json=payload,
             )
+            resp.raise_for_status()
+            db = resp.json()
             db_ids[key] = db["id"]
             created.append(schema["title"])
         except Exception as e:
@@ -238,6 +252,50 @@ def add_row(db_key: str, name: str, properties: dict) -> bool:
     except Exception as e:
         print(f"Notion write error ({db_key}): {e}")
         return False
+
+
+def repair_databases() -> dict[str, str]:
+    """
+    Ensure all cached databases have the correct properties.
+    Uses raw requests (notion-client library silently drops properties).
+    Returns dict of {db_key: "ok" | "error: ..."}.
+    """
+    if not os.environ.get("NOTION_API_KEY"):
+        return {}
+
+    db_ids = _load_db_ids()
+    results = {}
+
+    for key, schema in DATABASES.items():
+        db_id = db_ids.get(key)
+        if not db_id:
+            continue
+        try:
+            # Fetch actual properties
+            resp = requests.get(f"{NOTION_BASE}/databases/{db_id}", headers=_headers())
+            resp.raise_for_status()
+            existing = set(resp.json().get("properties", {}).keys())
+
+            missing = {
+                col: defn
+                for col, defn in schema["properties"].items()
+                if col not in existing
+            }
+
+            if missing:
+                patch = requests.patch(
+                    f"{NOTION_BASE}/databases/{db_id}",
+                    headers=_headers(),
+                    json={"properties": missing},
+                )
+                patch.raise_for_status()
+                results[key] = f"added {list(missing.keys())}"
+            else:
+                results[key] = "ok"
+        except Exception as e:
+            results[key] = f"error: {e}"
+
+    return results
 
 
 def is_configured() -> bool:

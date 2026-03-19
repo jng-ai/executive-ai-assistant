@@ -40,34 +40,80 @@ def _post(url: str, payload: dict) -> bool:
         return False
 
 
-def append_bonus_row(entry: dict) -> bool:
-    """Add a row to the CC or Bank sheet via its dedicated webhook."""
-    bonus_type = entry.get("type", "credit_card")
-    if bonus_type == "credit_card":
-        url = os.environ.get("GOOGLE_SHEETS_CC_WEBHOOK", "")
-        tab = "CC Bonuses"
-    else:
-        url = os.environ.get("GOOGLE_SHEETS_BANK_WEBHOOK", "")
-        tab = "Bank Bonuses"
+def append_cc_row(entry: dict) -> bool:
+    """Add a row to the CC Tracker sheet."""
+    url = os.environ.get("GOOGLE_SHEETS_CC_WEBHOOK", "")
     return _post(url, {
         "action": "append",
-        "tab": tab,
+        "tab": "CC Tracker",
         "row": [
-            entry.get("card_or_bank", ""),
-            entry.get("bonus_amount", ""),
-            entry.get("date_logged", datetime.date.today().isoformat()),
-            entry.get("min_spend", ""),
+            entry.get("bank_issuer", ""),
+            entry.get("card_name", entry.get("card_or_bank", "")),
+            entry.get("date_opened", datetime.date.today().isoformat()),
             entry.get("annual_fee", ""),
+            entry.get("annual_fee_date", ""),
+            entry.get("sign_up_bonus", entry.get("bonus_amount", "")),
+            entry.get("min_spend", ""),
+            entry.get("spend_deadline", ""),
+            entry.get("sub_status", ""),
+            entry.get("sub_earned_date", ""),
+            entry.get("card_status", "Active"),
+            entry.get("action_by_date", ""),
+            entry.get("downgrade_to", ""),
             entry.get("re_eligibility", ""),
-            entry.get("status", "received"),
-            entry.get("note", entry.get("notes", "")),
+            entry.get("historical_normal_sub", entry.get("bonus_amount", "")),
+            entry.get("notes", entry.get("note", "")),
+        ],
+        "headers": [
+            "Bank/Issuer", "Card Name", "Date Opened", "Annual Fee", "Annual Fee Date",
+            "Sign-Up Bonus", "Min Spend", "Spend Deadline", "SUB Status", "SUB Earned Date",
+            "Card Status", "Action By Date", "Downgrade To", "Re-Eligibility",
+            "Historical Normal SUB", "Notes",
+        ],
+    })
+
+
+def append_bank_row(entry: dict) -> bool:
+    """Add a row to the Bank Tracker sheet."""
+    url = os.environ.get("GOOGLE_SHEETS_BANK_WEBHOOK", "")
+    return _post(url, {
+        "action": "append",
+        "tab": "Bank Tracker",
+        "row": [
+            entry.get("bank", entry.get("card_or_bank", "")),
+            entry.get("account_type", ""),
+            entry.get("date_opened", datetime.date.today().isoformat()),
+            entry.get("bonus_amount", ""),
+            entry.get("min_deposit", entry.get("min_spend", "")),
+            entry.get("days_to_qualify", ""),
+            entry.get("bonus_deadline", ""),
+            entry.get("apy", ""),
+            entry.get("monthly_fee", ""),
+            entry.get("fee_waiver", ""),
+            entry.get("early_closure_penalty", ""),
+            entry.get("status", "Active"),
+            entry.get("bonus_received_date", ""),
+            entry.get("date_closed", ""),
+            entry.get("re_eligibility", ""),
+            entry.get("notes", entry.get("note", "")),
             entry.get("source", ""),
         ],
         "headers": [
-            "Card / Bank", "Bonus", "Date", "Min Spend",
-            "Annual Fee", "Re-Eligibility", "Status", "Notes", "Source"
+            "Bank", "Account Type", "Date Opened", "Bonus Amount", "Min Deposit",
+            "Days to Qualify", "Bonus Deadline", "APY", "Monthly Fee", "Fee Waiver",
+            "Early Closure Penalty", "Status", "Bonus Received Date", "Date Closed",
+            "Re-Eligibility", "Notes", "Source",
         ],
     })
+
+
+def append_bonus_row(entry: dict) -> bool:
+    """Route to CC or Bank sheet based on entry type."""
+    bonus_type = entry.get("type", "credit_card")
+    if bonus_type == "credit_card":
+        return append_cc_row(entry)
+    else:
+        return append_bank_row(entry)
 
 
 def append_budget_row(entry: dict) -> bool:
@@ -92,6 +138,10 @@ def read_bonus_tracker() -> dict:
     if not _requests:
         return {}
     result = {}
+    TAB_MAP = {
+        "GOOGLE_SHEETS_CC_WEBHOOK": "CC Tracker",
+        "GOOGLE_SHEETS_BANK_WEBHOOK": "Bank Tracker",
+    }
     for env_var in ("GOOGLE_SHEETS_CC_WEBHOOK", "GOOGLE_SHEETS_BANK_WEBHOOK"):
         url = os.environ.get(env_var, "")
         if not url:

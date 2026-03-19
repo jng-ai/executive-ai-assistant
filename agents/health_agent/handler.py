@@ -29,6 +29,11 @@ Justin's goals:
 - Meals: track what he eats without being obsessive
 - Overall philosophy: build consistent habits, not perfection
 
+Your capabilities:
+- You CAN analyze food photos — Justin can send a photo directly in Telegram and you will estimate calories, protein, carbs, fat, and log the meal automatically
+- You can log weight, sleep, workouts, and meals from text messages
+- You can show weekly summaries and trends
+
 When Justin asks for a workout, routine, or exercise ideas:
 - Give a specific, actionable workout with sets/reps/rest
 - Tailor to his equipment (gym weights or apartment pool)
@@ -90,25 +95,38 @@ def parse_log(message: str) -> dict | None:
         return None
 
 
-WORKOUT_KEYWORDS = [
-    "suggest", "routine", "workout", "exercise", "routine", "plan", "program",
-    "bicep", "tricep", "chest", "back", "shoulder", "leg", "squat", "deadlift",
-    "pull", "push", "abs", "core", "cardio", "swim", "hiit", "how to",
-    "what should i", "what exercise", "give me a", "help me", "ideas",
+WORKOUT_SUGGEST_KEYWORDS = [
+    "suggest", "routine", "plan", "program", "what should i", "what exercise",
+    "give me a", "help me", "ideas", "recommend", "how to", "what do i",
+    "what can i", "tomorrow", "next workout", "after this",
 ]
+
+WORKOUT_TOPIC_KEYWORDS = [
+    "workout", "exercise", "bicep", "tricep", "chest", "back", "shoulder",
+    "leg", "squat", "deadlift", "pull", "push", "abs", "core", "cardio",
+    "swim", "hiit", "gym", "lift",
+]
+
+WORKOUT_COMPLETION_WORDS = [
+    "logged", "did", "completed", "finished", "swam", "ran", "lifted",
+    "started", "just", "already", "done",
+]
+
 
 def handle(message: str) -> str:
     msg_lower = message.lower()
 
     # Summary / trend request
     if any(w in msg_lower for w in ["summary", "trend", "progress", "stats",
-                                     "how am i", "report", "week", "overview", "check in"]):
+                                     "how am i", "report", "overview", "check in"]):
         return _build_summary()
 
-    # Workout suggestion / coaching question — skip log parsing, go straight to AI
-    if any(w in msg_lower for w in WORKOUT_KEYWORDS) and not any(
-        w in msg_lower for w in ["logged", "did", "completed", "finished", "swam", "ran", "lifted"]
-    ):
+    has_suggest = any(w in msg_lower for w in WORKOUT_SUGGEST_KEYWORDS)
+    has_topic   = any(w in msg_lower for w in WORKOUT_TOPIC_KEYWORDS)
+    has_done    = any(w in msg_lower for w in WORKOUT_COMPLETION_WORDS)
+
+    # Pure coaching request (no completion language) → go straight to AI
+    if (has_suggest or has_topic) and not has_done:
         summary_data = get_health_summary(7)
         context = f"Justin's recent health logs (7 days):\n{summary_data}\n\nRequest: {message}"
         return chat(SYSTEM, context, max_tokens=600)
@@ -119,7 +137,6 @@ def handle(message: str) -> str:
         entry = log_health(parsed["metric"], parsed["value"], note=message)
         metric = parsed["metric"]
         value = parsed["value"]
-        unit = parsed.get("unit", "")
 
         feedback = ""
 
@@ -158,9 +175,33 @@ def handle(message: str) -> str:
                 feedback = f"\n💪 {count}/{goal} workouts this week — {remaining} to go"
 
         elif metric == "meal":
-            feedback = "\n🥗 Meal logged"
+            import datetime as _dt
+            _et = _dt.timezone(_dt.timedelta(hours=-5))
+            _hour = _dt.datetime.now(tz=_et).hour
+            if 5 <= _hour < 11:
+                _label = "Breakfast"
+            elif 11 <= _hour < 15:
+                _label = "Lunch"
+            elif 15 <= _hour < 18:
+                _label = "Snack"
+            else:
+                _label = "Dinner"
+            feedback = f"\n🥗 {_label} logged"
 
-        return f"✅ Logged: *{metric}*\n_{value}_{feedback}"
+        log_response = f"✅ Logged: *{metric}*\n_{value}_{feedback}"
+
+        # If they also asked what to do next, answer that too
+        if has_suggest:
+            summary_data = get_health_summary(7)
+            context = (
+                f"Justin just logged: {message}\n"
+                f"Recent logs (7 days):\n{summary_data}\n\n"
+                f"Answer his question about what to do next. Be specific and concise."
+            )
+            coaching = chat(SYSTEM, context, max_tokens=400)
+            return f"{log_response}\n\n{coaching}"
+
+        return log_response
 
     # Not a log — ask the AI
     summary_data = get_health_summary(7)

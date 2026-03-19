@@ -28,6 +28,15 @@ def check_env():
 
 def run_bot():
     check_env()
+
+    # Ensure all Notion databases have correct columns (silent on failure)
+    try:
+        from integrations.notion.client import is_configured, repair_databases
+        if is_configured():
+            repair_databases()
+    except Exception:
+        pass
+
     from integrations.telegram.bot import run_bot
     run_bot()
 

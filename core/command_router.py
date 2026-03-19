@@ -5,9 +5,7 @@ Command Router — classifies incoming user messages and routes to the right age
 import json
 from core.llm import chat
 
-ROUTER_PROMPT = """You are the command router for Justin Ngai's personal executive AI assistant.
-
-Classify the user's message into one of these intent types:
+ROUTER_PROMPT = """You are a message classifier. Classify the user's message into one of these intent types:
 
 - schedule_meeting     : scheduling, calendar, appointments, meetings
 - draft_email          : compose or send an email
@@ -19,6 +17,8 @@ Classify the user's message into one of these intent types:
 - travel_hack          : award flights, miles, travel deals, points optimization
 - nyc_events           : NYC events, meetups, networking, things to do
 - personal_finance     : bank signup bonuses, credit card SUBs, budget tracking, spending, eligibility rules, Doctor of Credit, Frequent Miler
+- bonus_alert          : check for elevated bonuses, scan for deals, bonus alert status, force scan, check bonuses now
+- market_intel         : stock market analysis, sector rotation, macro view, earnings catalysts, specific stock/ETF ideas, market briefing, trade ideas, JP Morgan style analysis
 - daily_briefing       : morning briefing, summary, what's happening today
 - general_question     : anything else
 
