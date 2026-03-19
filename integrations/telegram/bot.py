@@ -21,8 +21,9 @@ from agents.social_agent.handler import handle as social_handle, run_event_scan
 from agents.finance_agent.handler import handle as finance_handle
 from agents.bonus_alert.handler import handle as bonus_alert_handle, run_bonus_scan
 from agents.market_agent.handler import handle as market_handle
-from agents.calendar_agent.handler import handle as calendar_handle
-from agents.email_agent.handler import handle as email_handle
+from agents.calendar_agent.handler import handle as calendar_handle, run_morning_briefing
+from agents.email_agent.handler import handle as email_handle, run_morning_digest
+from agents.followup_agent.handler import handle as followup_handle, run_pending_followups
 from agents.general_handler import handle_general
 
 logging.basicConfig(level=logging.INFO)
@@ -517,6 +518,9 @@ async def dispatch(intent: str, details: str, params: dict, raw: str) -> str:
     elif intent == "draft_email":
         return await asyncio.to_thread(email_handle, raw)
 
+    elif intent == "follow_up":
+        return await asyncio.to_thread(followup_handle, raw)
+
     elif intent == "daily_briefing":
         return await build_briefing()
 
@@ -593,6 +597,49 @@ async def _scheduled_health_nudge(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Health nudge error: {e}")
 
 
+async def _scheduled_followup_check(context: ContextTypes.DEFAULT_TYPE):
+    """Daily 8:05 AM check — fire any due follow-up emails or meeting invites."""
+    try:
+        results = await asyncio.to_thread(run_pending_followups)
+        if results:
+            chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+            if chat_id:
+                for msg in results:
+                    await context.bot.send_message(
+                        chat_id=chat_id, text=msg, parse_mode="Markdown"
+                    )
+    except Exception as e:
+        logger.error(f"Follow-up scheduler error: {e}")
+
+
+async def _scheduled_calendar_briefing(context: ContextTypes.DEFAULT_TYPE):
+    """Daily 7:45 AM calendar briefing — today + tomorrow events. Silent if nothing scheduled."""
+    try:
+        result = await asyncio.to_thread(run_morning_briefing)
+        if result:
+            chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+            if chat_id:
+                await context.bot.send_message(
+                    chat_id=chat_id, text=result, parse_mode="Markdown"
+                )
+    except Exception as e:
+        logger.error(f"Calendar briefing error: {e}")
+
+
+async def _scheduled_email_digest(context: ContextTypes.DEFAULT_TYPE):
+    """Daily 7:50 AM email digest — urgency-triaged unread. Silent if inbox is zero."""
+    try:
+        result = await asyncio.to_thread(run_morning_digest)
+        if result:
+            chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+            if chat_id:
+                await context.bot.send_message(
+                    chat_id=chat_id, text=result, parse_mode="Markdown"
+                )
+    except Exception as e:
+        logger.error(f"Email digest error: {e}")
+
+
 async def _scheduled_event_scan(context: ContextTypes.DEFAULT_TYPE):
     """
     Twice-weekly NYC event scan — Tuesdays + Fridays at 9 AM ET.
@@ -655,6 +702,30 @@ def run_bot():
             name="daily_health_nudge",
         )
         logger.info("Scheduled daily health nudge at 7:30 AM ET")
+
+        # Follow-up check — 8:05 AM ET daily (fires due email/meeting follow-ups)
+        job_queue.run_daily(
+            _scheduled_followup_check,
+            time=dt.time(hour=8, minute=5, tzinfo=ET),
+            name="daily_followup_check",
+        )
+        logger.info("Scheduled daily follow-up check at 8:05 AM ET")
+
+        # Calendar briefing — 7:45 AM ET daily (silent if no events)
+        job_queue.run_daily(
+            _scheduled_calendar_briefing,
+            time=dt.time(hour=7, minute=45, tzinfo=ET),
+            name="daily_calendar_briefing",
+        )
+        logger.info("Scheduled daily calendar briefing at 7:45 AM ET")
+
+        # Email digest — 7:50 AM ET daily (silent if inbox zero)
+        job_queue.run_daily(
+            _scheduled_email_digest,
+            time=dt.time(hour=7, minute=50, tzinfo=ET),
+            name="daily_email_digest",
+        )
+        logger.info("Scheduled daily email digest at 7:50 AM ET")
 
     logger.info("Bot running. Send /start to your bot in Telegram.")
     app.run_polling(drop_pending_updates=True)

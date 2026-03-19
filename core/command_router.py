@@ -20,6 +20,7 @@ ROUTER_PROMPT = """You are a message classifier. Classify the user's message int
 - bonus_alert          : check for elevated bonuses, scan for deals, bonus alert status, force scan, check bonuses now
 - market_intel         : stock market analysis, sector rotation, macro view, earnings catalysts, specific stock/ETF ideas, market briefing, trade ideas, JP Morgan style analysis
 - daily_briefing       : morning briefing, summary, what's happening today
+- follow_up            : schedule a follow-up email or meeting in the future ("follow up with X in 3 days", "remind me to email Y next week about Z", "what follow-ups do I have", "cancel follow-up 2")
 - general_question     : anything else
 
 Return ONLY valid JSON. No commentary. No markdown. Example:

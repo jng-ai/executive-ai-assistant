@@ -95,39 +95,135 @@ def create_event(title: str, start: str, end: str = None,
 
 
 def find_free_slots(date: str, duration_minutes: int = 60) -> list[str]:
-    """Find free time slots on a given date (YYYY-MM-DD)."""
+    """Find free time slots on a given date (YYYY-MM-DD), checking ALL calendars."""
     if not is_configured():
         return []
     try:
         svc = _service()
-        day_start = f"{date}T00:00:00Z"
+        # Use ET offset — convert date to UTC range covering full ET day
+        day_start = f"{date}T04:00:00Z"   # midnight ET = 4AM UTC (or 5AM during EST)
         day_end   = f"{date}T23:59:59Z"
-        result = svc.events().list(
-            calendarId="primary",
-            timeMin=day_start,
-            timeMax=day_end,
-            singleEvents=True,
-            orderBy="startTime",
-        ).execute()
         busy = []
-        for ev in result.get("items", []):
-            s = ev.get("start", {})
-            e = ev.get("end", {})
-            if "dateTime" in s:
-                busy.append((s["dateTime"][:16], e["dateTime"][:16]))
+        for cal_id in _get_calendar_ids():
+            try:
+                result = svc.events().list(
+                    calendarId=cal_id,
+                    timeMin=day_start,
+                    timeMax=day_end,
+                    singleEvents=True,
+                    orderBy="startTime",
+                ).execute()
+                for ev in result.get("items", []):
+                    s = ev.get("start", {})
+                    e = ev.get("end", {})
+                    if "dateTime" in s:
+                        busy.append((s["dateTime"][:16], e["dateTime"][:16]))
+            except Exception:
+                continue
 
-        # Simple: list morning/afternoon/evening slots not in busy
+        # Candidate slots: 9am–7pm ET
         candidate_hours = [9, 10, 11, 13, 14, 15, 16, 17, 18, 19]
         free = []
         for h in candidate_hours:
             slot_start = f"{date}T{h:02d}:00"
-            slot_end   = f"{date}T{h + duration_minutes // 60:02d}:{duration_minutes % 60:02d}"
+            end_h = h + duration_minutes // 60
+            end_m = duration_minutes % 60
+            slot_end = f"{date}T{end_h:02d}:{end_m:02d}"
             clash = any(s <= slot_start < e or s < slot_end <= e for s, e in busy)
             if not clash:
                 free.append(f"{h % 12 or 12}{'am' if h < 12 else 'pm'}")
         return free[:5]
     except Exception as e:
         print(f"Free slot error: {e}")
+        return []
+
+
+def get_todays_events() -> list[dict]:
+    """Return only today's events (midnight to midnight ET)."""
+    if not is_configured():
+        return []
+    try:
+        today = datetime.date.today()
+        svc = _service()
+        day_start = f"{today}T00:00:00-05:00"
+        day_end   = f"{today}T23:59:59-05:00"
+        all_events = []
+        for cal_id in _get_calendar_ids():
+            try:
+                result = svc.events().list(
+                    calendarId=cal_id,
+                    timeMin=day_start,
+                    timeMax=day_end,
+                    singleEvents=True,
+                    orderBy="startTime",
+                ).execute()
+                all_events.extend(result.get("items", []))
+            except Exception:
+                continue
+        all_events.sort(key=lambda ev: ev.get("start", {}).get("dateTime", ev.get("start", {}).get("date", "")))
+        return all_events
+    except Exception as e:
+        print(f"Today events error: {e}")
+        return []
+
+
+def delete_event(keyword: str) -> str:
+    """Delete the first upcoming event whose title contains keyword. Returns result message."""
+    if not is_configured():
+        return "Google Calendar not connected."
+    try:
+        events = list_events(days_ahead=30)
+        matches = [ev for ev in events if keyword.lower() in ev.get("summary", "").lower()]
+        if not matches:
+            return f"No upcoming events matching '{keyword}' found."
+        ev = matches[0]
+        title = ev.get("summary", "Untitled")
+        # Determine which calendar owns this event
+        cal_id = ev.get("organizer", {}).get("email", "primary")
+        svc = _service()
+        # Try deletion across all calendars
+        deleted = False
+        for cid in _get_calendar_ids():
+            try:
+                svc.events().delete(calendarId=cid, eventId=ev["id"]).execute()
+                deleted = True
+                break
+            except Exception:
+                continue
+        if deleted:
+            return f"🗑 Deleted: *{title}*"
+        return f"⚠️ Couldn't delete '{title}' — may not have edit access."
+    except Exception as e:
+        print(f"Delete event error: {e}")
+        return "⚠️ Error deleting event."
+
+
+def check_conflicts(date: str, time: str, duration_minutes: int = 60) -> list[str]:
+    """Return titles of events that overlap a proposed time slot."""
+    try:
+        svc = _service()
+        h, m = int(time[:2]), int(time[3:5])
+        total_end = h * 60 + m + duration_minutes
+        slot_start = f"{date}T{time}:00-05:00"
+        slot_end   = f"{date}T{total_end // 60:02d}:{total_end % 60:02d}:00-05:00"
+        conflicts = []
+        for cal_id in _get_calendar_ids():
+            try:
+                result = svc.events().list(
+                    calendarId=cal_id,
+                    timeMin=slot_start,
+                    timeMax=slot_end,
+                    singleEvents=True,
+                ).execute()
+                for ev in result.get("items", []):
+                    title = ev.get("summary", "Untitled")
+                    if title not in conflicts:
+                        conflicts.append(title)
+            except Exception:
+                continue
+        return conflicts
+    except Exception as e:
+        print(f"Conflict check error: {e}")
         return []
 
 
