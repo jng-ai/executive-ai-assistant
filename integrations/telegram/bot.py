@@ -21,8 +21,8 @@ from agents.social_agent.handler import handle as social_handle, run_event_scan
 from agents.finance_agent.handler import handle as finance_handle
 from agents.bonus_alert.handler import handle as bonus_alert_handle, run_bonus_scan
 from agents.market_agent.handler import handle as market_handle
-from agents.calendar_agent.handler import handle as calendar_handle, run_morning_briefing
-from agents.email_agent.handler import handle as email_handle, run_morning_digest
+from agents.calendar_agent.handler import handle as calendar_handle, run_morning_briefing, run_eod_calendar
+from agents.email_agent.handler import handle as email_handle, run_morning_digest, run_eod_email_summary
 from agents.followup_agent.handler import handle as followup_handle, run_pending_followups
 from agents.general_handler import handle_general
 
@@ -597,6 +597,32 @@ async def _scheduled_health_nudge(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Health nudge error: {e}")
 
 
+async def _scheduled_eod_wrapup(context: ContextTypes.DEFAULT_TYPE):
+    """Daily 6 PM ET — combined calendar + email end-of-day wrap-up."""
+    try:
+        cal_summary = await asyncio.to_thread(run_eod_calendar)
+        email_summary = await asyncio.to_thread(run_eod_email_summary)
+
+        if not cal_summary and not email_summary:
+            return   # Nothing to report — stay silent
+
+        parts = ["🌆 *End of Day Wrap-up*\n"]
+        if cal_summary:
+            parts.append(cal_summary)
+        if email_summary:
+            parts.append(email_summary)
+
+        message = "\n\n".join(parts)
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+        if chat_id:
+            for i in range(0, len(message), 4000):
+                await context.bot.send_message(
+                    chat_id=chat_id, text=message[i:i+4000], parse_mode="Markdown"
+                )
+    except Exception as e:
+        logger.error(f"EOD wrap-up error: {e}")
+
+
 async def _scheduled_followup_check(context: ContextTypes.DEFAULT_TYPE):
     """Daily 8:05 AM check — fire any due follow-up emails or meeting invites."""
     try:
@@ -702,6 +728,14 @@ def run_bot():
             name="daily_health_nudge",
         )
         logger.info("Scheduled daily health nudge at 7:30 AM ET")
+
+        # EOD wrap-up — 6 PM ET daily (calendar + email combined, silent if clean)
+        job_queue.run_daily(
+            _scheduled_eod_wrapup,
+            time=dt.time(hour=18, minute=0, tzinfo=ET),
+            name="daily_eod_wrapup",
+        )
+        logger.info("Scheduled daily EOD wrap-up at 6 PM ET")
 
         # Follow-up check — 8:05 AM ET daily (fires due email/meeting follow-ups)
         job_queue.run_daily(

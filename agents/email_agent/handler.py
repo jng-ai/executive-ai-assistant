@@ -324,3 +324,50 @@ def run_morning_digest() -> str:
     except Exception as e:
         print(f"Morning email digest error: {e}")
         return ""
+
+
+def run_eod_email_summary() -> str:
+    """
+    Evening email summary — unread count + who still needs a reply.
+    Returns empty string if inbox is clean.
+    """
+    if not is_configured():
+        return ""
+    try:
+        from integrations.google.gmail_client import list_unread, format_emails, _triage_urgency
+        unread = list_unread(max_results=10)
+        if not unread:
+            return "📭 *Email:* Inbox zero — nothing unread 🎉"
+
+        urgent, needs_reply, fyi = [], [], []
+        for e in unread:
+            sender = e["from"].split("<")[0].strip()
+            urg = _triage_urgency(e.get("subject", ""), e.get("snippet", ""), sender)
+            if urg == "🔴":
+                urgent.append(e)
+            elif urg == "🟡":
+                needs_reply.append(e)
+            else:
+                fyi.append(e)
+
+        lines = [f"📬 *Email:* {len(unread)} unread"]
+
+        if urgent:
+            lines.append("🔴 *Still needs attention:*")
+            for e in urgent:
+                sender = e["from"].split("<")[0].strip()
+                lines.append(f"  • *{e['subject']}* — {sender}")
+
+        if needs_reply:
+            lines.append("🟡 *Waiting on reply:*")
+            for e in needs_reply[:3]:
+                sender = e["from"].split("<")[0].strip()
+                lines.append(f"  • *{e['subject']}* — {sender}")
+
+        if fyi:
+            lines.append(f"⚪ {len(fyi)} FYI / newsletters")
+
+        return "\n".join(lines)
+    except Exception as e:
+        print(f"EOD email summary error: {e}")
+        return ""

@@ -270,6 +270,76 @@ def run_morning_briefing() -> str:
         return ""
 
 
+def run_eod_calendar() -> str:
+    """
+    Evening calendar summary — remaining events today + full tomorrow preview.
+    Called at 6 PM ET. Returns empty string if nothing to report.
+    """
+    if not is_configured():
+        return ""
+    try:
+        from integrations.google.calendar_client import get_todays_events, list_events, format_events
+        now = datetime.datetime.now()
+        today = datetime.date.today()
+        tomorrow = today + datetime.timedelta(days=1)
+
+        # Remaining events today (start time > now)
+        all_today = get_todays_events()
+        remaining_today = []
+        for ev in all_today:
+            dt_str = ev.get("start", {}).get("dateTime", "")
+            if dt_str:
+                try:
+                    ev_dt = datetime.datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                    ev_dt_local = ev_dt.astimezone(datetime.timezone(datetime.timedelta(hours=-4)))
+                    if ev_dt_local > now.astimezone(datetime.timezone(datetime.timedelta(hours=-4))):
+                        remaining_today.append(ev)
+                except Exception:
+                    pass
+            # All-day events always count
+            elif ev.get("start", {}).get("date"):
+                remaining_today.append(ev)
+
+        # Tomorrow events
+        all_next = list_events(days_ahead=2)
+        tomorrow_events = [
+            ev for ev in all_next
+            if ev.get("start", {}).get("dateTime", ev.get("start", {}).get("date", ""))[:10]
+            == tomorrow.isoformat()
+        ]
+
+        parts = []
+
+        if remaining_today:
+            parts.append(f"*Still today:*\n{format_events(remaining_today)}")
+
+        if tomorrow_events:
+            parts.append(f"*Tomorrow ({tomorrow.strftime('%A %b %-d')}):*\n{format_events(tomorrow_events[:5])}")
+        else:
+            parts.append(f"*Tomorrow:* Nothing scheduled — free day ✨")
+
+        # Pending follow-ups due tomorrow
+        try:
+            from core.followups import list_all_pending
+            due_tomorrow = [
+                f for f in list_all_pending()
+                if f["due"][:10] == tomorrow.isoformat()
+            ]
+            if due_tomorrow:
+                fu_lines = "\n".join(
+                    f"  • {f['type'].title()} → {f['contact']} re: {f['context']}"
+                    for f in due_tomorrow
+                )
+                parts.append(f"*Follow-ups firing tomorrow:*\n{fu_lines}")
+        except Exception:
+            pass
+
+        return "\n\n".join(parts) if parts else ""
+    except Exception as e:
+        print(f"EOD calendar error: {e}")
+        return ""
+
+
 def _fmt_time(time_str: str) -> str:
     """Convert '19:00' to '7:00pm'."""
     try:
