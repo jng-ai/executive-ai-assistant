@@ -16,7 +16,7 @@ from agents.infusion_agent.handler import handle as infusion_handle
 from agents.mortgage_note_agent.handler import handle as mortgage_handle
 from agents.investment_agent.handler import handle as investment_handle
 from agents.travel_agent.handler import handle as travel_handle
-from agents.health_agent.handler import handle as health_handle
+from agents.health_agent.handler import handle as health_handle, run_daily_nudge
 from agents.social_agent.handler import handle as social_handle, run_event_scan
 from agents.finance_agent.handler import handle as finance_handle
 from agents.bonus_alert.handler import handle as bonus_alert_handle, run_bonus_scan
@@ -581,6 +581,18 @@ async def _scheduled_bonus_scan(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Scheduled bonus scan error: {e}")
 
 
+async def _scheduled_health_nudge(context: ContextTypes.DEFAULT_TYPE):
+    """Daily 7:30 AM health check-in — only fires if Justin is behind on goals."""
+    try:
+        result = await asyncio.to_thread(run_daily_nudge)
+        if result:
+            chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+            if chat_id:
+                await context.bot.send_message(chat_id=chat_id, text=result, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Health nudge error: {e}")
+
+
 async def _scheduled_event_scan(context: ContextTypes.DEFAULT_TYPE):
     """
     Twice-weekly NYC event scan — Tuesdays + Fridays at 9 AM ET.
@@ -635,6 +647,14 @@ def run_bot():
             name="biweekly_event_scan",
         )
         logger.info("Scheduled NYC event scan Tue + Fri at 9 AM ET")
+
+        # Health nudge — every morning at 7:30 AM ET (only sends if behind on goals)
+        job_queue.run_daily(
+            _scheduled_health_nudge,
+            time=dt.time(hour=7, minute=30, tzinfo=ET),
+            name="daily_health_nudge",
+        )
+        logger.info("Scheduled daily health nudge at 7:30 AM ET")
 
     logger.info("Bot running. Send /start to your bot in Telegram.")
     app.run_polling(drop_pending_updates=True)
