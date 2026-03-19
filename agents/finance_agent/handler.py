@@ -201,10 +201,11 @@ def _check_eligibility(message: str, card_name: str = None) -> str:
     all_results = results + doc_results
 
     context = format_results(all_results[:5]) if all_results else ""
+    search_section = ("Search results:\n" + context) if context else ""
     prompt = f"""User question: {message}
 Card/bank in question: {card_name or 'not specified'}
 
-{"Search results:\n" + context if context else ""}
+{search_section}
 
 Explain the eligibility rules clearly:
 - Who qualifies for the bonus (new cardmember rules, etc.)
@@ -389,5 +390,6 @@ def handle(message: str) -> str:
         # General finance question
         results = search(query, max_results=4)
         context = format_results(results) if results else ""
-        full_prompt = f"Question: {message}\n\n{'Search results:\n' + context if context else ''}"
+        search_section = ("Search results:\n" + context) if context else ""
+        full_prompt = f"Question: {message}\n\n{search_section}"
         return chat(SYSTEM, full_prompt, max_tokens=500)
