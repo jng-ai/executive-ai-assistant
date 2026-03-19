@@ -140,6 +140,7 @@ def _market_briefing(message: str, mh: dict, timeframe: str) -> str:
         period_instructions = f"Session: {session_ctx}"
 
     context = _search_market_intel(search_q)
+    market_section = ("Market data:\n" + context) if context else "Use your training data — be clear about recency limitations."
 
     prompt = f"""Today is {today}. Session: {session_ctx}
 
@@ -155,13 +156,14 @@ Structure:
 5. 📅 **WHAT'S NEXT** — 1-2 upcoming catalysts in the next few days
 
 Be explicit about what time period data covers. If data is limited, say so and use your training context.
-{("Market data:\n" + context) if context else "Use your training data — be clear about recency limitations."}"""
+{market_section}"""
 
     return chat(SYSTEM, prompt, max_tokens=750)
 
 
 def _sector_rotation(message: str, mh: dict) -> str:
     context = _search_market_intel(f"sector rotation {mh['date']} outperform underperform ETF this week")
+    context_section = ("Context:\n" + context) if context else ""
 
     prompt = f"""Today: {mh['date']} | {mh['context']}
 Question: {message}
@@ -177,13 +179,14 @@ Entry: [level or price range]
 Risk: [what invalidates]
 
 Focus on: XLK, XLE, XLF, XLV, XLI, XLRE, XLC, XLY, XLP, XLB, XLU
-{("Context:\n" + context) if context else ""}"""
+{context_section}"""
 
     return chat(SYSTEM, prompt, max_tokens=650)
 
 
 def _macro_view(message: str, mh: dict) -> str:
     context = _search_market_intel(f"Fed rates inflation macro {mh['date']} {datetime.date.today().strftime('%B %Y')}")
+    context_section = ("Context:\n" + context) if context else ""
 
     prompt = f"""Today: {mh['date']} | {mh['context']}
 Question: {message}
@@ -197,7 +200,7 @@ Provide a sharp macro view covering the CURRENT backdrop:
 📊 EQUITY IMPLICATION: Sectors to own/avoid given this setup
 
 State clearly what is current vs. what is a forecast.
-{("Context:\n" + context) if context else ""}"""
+{context_section}"""
 
     return chat(SYSTEM, prompt, max_tokens=650)
 
@@ -206,6 +209,7 @@ def _earnings_catalysts(message: str, mh: dict) -> str:
     context = _search_market_intel(
         f"earnings this week {mh['date']} {datetime.date.today().strftime('%B %Y')} upcoming results"
     )
+    context_section = ("Context:\n" + context) if context else ""
 
     prompt = f"""Today: {mh['date']}
 Question: {message}
@@ -219,7 +223,7 @@ List upcoming high-impact earnings/catalysts from THIS WEEK forward. For each:
   • Trade: [long / short / straddle / skip]
 
 Include 3-5 names with clearest setups. Be explicit about dates.
-{("Context:\n" + context) if context else ""}"""
+{context_section}"""
 
     return chat(SYSTEM, prompt, max_tokens=650)
 
@@ -242,6 +246,7 @@ def _ticker_analysis(message: str, mh: dict, timeframe: str) -> str:
         search_q = f"{message} stock latest news {mh['date']}"
 
     context = _search_market_intel(search_q)
+    context_section = ("Context:\n" + context) if context else ""
 
     prompt = f"""User request: {message}
 Tickers: {ticker_str}
@@ -263,6 +268,6 @@ Provide sharp, actionable analysis. LEAD with the most recent/relevant price act
 
 If multiple tickers: do each separately.
 Note: State clearly if data is from training vs. live search.
-{("Context:\n" + context) if context else ""}"""
+{context_section}"""
 
     return chat(SYSTEM, prompt, max_tokens=750)
