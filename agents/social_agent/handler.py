@@ -11,8 +11,9 @@ Features:
 
 import time
 import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from core.llm import chat
-from core.search import search, format_results
+from core.search import search, fetch_page, format_results
 
 # ── Justin's identity context ─────────────────────────────────────────────────
 
@@ -190,18 +191,232 @@ def _filter_stale(results: list[dict]) -> list[dict]:
     return kept if kept else results
 
 
+def _fetch_luma() -> list[dict]:
+    """
+    Directly crawl Luma NYC event listing pages.
+    This gets actual upcoming events, not just indexed search snippets.
+    """
+    start, end, today_iso, today = _get_date_range()
+    results = []
+
+    # Direct Luma NYC discover pages
+    luma_urls = [
+        "https://lu.ma/nyc",
+        "https://lu.ma/discover?query=NYC+free&start=today",
+        "https://lu.ma/discover?query=NYC+health+tech&start=today",
+        "https://lu.ma/discover?query=NYC+Asian+AAPI&start=today",
+    ]
+    for url in luma_urls:
+        content = fetch_page(url, max_chars=4000)
+        if content and len(content) > 200:
+            results.append({"title": f"Luma Events: {url}", "url": url, "content": content})
+
+    # Also run targeted Tavily searches to surface specific Luma event pages
+    luma_queries = [
+        f'site:lu.ma NYC free events {start} 2026',
+        f'site:lu.ma NYC healthcare tech startup networking {start} OR {end} 2026',
+        f'site:lu.ma NYC AAPI Japanese Asian free {start} 2026',
+        f'site:lu.ma NYC pop-up food drink free {start} 2026',
+    ]
+    for q in luma_queries:
+        for r in search(q, max_results=5):
+            results.append(r)
+
+    return results
+
+
+def _fetch_eventbrite() -> list[dict]:
+    """
+    Directly crawl Eventbrite NYC free event pages + targeted searches.
+    """
+    start, end, today_iso, today = _get_date_range()
+    results = []
+
+    # Direct Eventbrite NYC listing pages
+    eb_urls = [
+        "https://www.eventbrite.com/d/ny--new-york/free--events/",
+        "https://www.eventbrite.com/d/ny--new-york/networking--events/",
+        "https://www.eventbrite.com/d/ny--new-york/free--networking--events/",
+        "https://www.eventbrite.com/d/ny--new-york/health--events/",
+    ]
+    for url in eb_urls:
+        content = fetch_page(url, max_chars=4000)
+        if content and len(content) > 200:
+            results.append({"title": f"Eventbrite NYC: {url}", "url": url, "content": content})
+
+    # Tavily searches for specific Eventbrite event pages
+    eb_queries = [
+        f'site:eventbrite.com NYC free networking {start} 2026',
+        f'site:eventbrite.com NYC healthcare tech digital health free {start} 2026',
+        f'site:eventbrite.com NYC AAPI Asian professional free {start} 2026',
+        f'site:eventbrite.com NYC pop-up food drink free {start} 2026',
+    ]
+    for q in eb_queries:
+        for r in search(q, max_results=5):
+            results.append(r)
+
+    return results
+
+
+def _fetch_meetup() -> list[dict]:
+    """
+    Fetch Meetup.com NYC events for healthcare, tech, and AAPI groups.
+    """
+    start, _, today_iso, today = _get_date_range()
+    results = []
+
+    meetup_urls = [
+        "https://www.meetup.com/find/?location=New+York%2C+NY&source=EVENTS&eventType=inPerson&distance=tenMiles",
+        "https://www.meetup.com/find/?keywords=health+tech&location=New+York%2C+NY&source=EVENTS&eventType=inPerson",
+        "https://www.meetup.com/find/?keywords=startup+networking&location=New+York%2C+NY&source=EVENTS&eventType=inPerson",
+    ]
+    for url in meetup_urls:
+        content = fetch_page(url, max_chars=3000)
+        if content and len(content) > 200:
+            results.append({"title": "Meetup NYC Events", "url": url, "content": content})
+
+    meetup_queries = [
+        f'site:meetup.com NYC free health tech digital health networking {start} 2026',
+        f'site:meetup.com NYC AAPI Asian startup tech networking free {start} 2026',
+    ]
+    for q in meetup_queries:
+        for r in search(q, max_results=3):
+            results.append(r)
+
+    return results
+
+
+def _fetch_x_rsvp() -> list[dict]:
+    """
+    Scan X/Twitter for RSVP NYC posts.
+    X blocks most crawlers, so we try Nitter (X proxy) instances first,
+    then fall back to Tavily searches that may surface indexed tweets.
+    """
+    results = []
+
+    # Try Nitter instances — X-compatible frontend that allows search
+    nitter_instances = [
+        "https://nitter.privacydev.net/search?q=RSVP+NYC+free&f=tweets",
+        "https://nitter.poast.org/search?q=RSVP+NYC+free&f=tweets",
+        "https://nitter.1d4.us/search?q=RSVP+NYC+free&f=tweets",
+        "https://nitter.net/search?q=RSVP+NYC+free&f=tweets",
+    ]
+    for url in nitter_instances:
+        content = fetch_page(url, max_chars=4000)
+        if content and len(content) > 300 and "tweet" in content.lower():
+            results.append({"title": "X/Twitter: RSVP NYC", "url": url, "content": content})
+            break  # One working Nitter instance is enough
+
+    # Also try fetching @rsvpnyc style aggregator accounts on Nitter
+    aggregator_urls = [
+        "https://nitter.privacydev.net/search?q=%22RSVP+NYC%22+lu.ma&f=tweets",
+        "https://nitter.privacydev.net/search?q=%22NYC+free+event%22+lu.ma+OR+eventbrite&f=tweets",
+    ]
+    for url in aggregator_urls:
+        content = fetch_page(url, max_chars=3000)
+        if content and len(content) > 300:
+            results.append({"title": "X/Twitter: NYC Free Events", "url": url, "content": content})
+
+    # Fallback: Tavily queries that may surface indexed tweet content
+    x_queries = [
+        '"RSVP NYC" free event lu.ma OR eventbrite OR partiful 2026',
+        '"NYC free event" RSVP link 2026 healthcare OR tech OR popup OR food',
+    ]
+    for q in x_queries:
+        for r in search(q, max_results=4):
+            results.append(r)
+
+    return results
+
+
+def _fetch_other_sources() -> list[dict]:
+    """
+    Fetch from Partiful, Time Out NYC, Reddit, Thrillist, and other sources.
+    """
+    start, end, today_iso, today = _get_date_range()
+    results = []
+
+    # Direct page fetches
+    other_urls = [
+        "https://www.timeout.com/newyork/things-to-do/free-things-to-do-in-nyc-this-weekend",
+        "https://www.timeout.com/newyork/things-to-do/best-free-events-in-new-york",
+        "https://www.nycfreeevents.com",
+    ]
+    for url in other_urls:
+        content = fetch_page(url, max_chars=3000)
+        if content and len(content) > 200:
+            results.append({"title": f"Events: {url}", "url": url, "content": content})
+
+    # Partiful + Reddit + Thrillist via search
+    other_queries = [
+        f'site:partiful.com NYC free event {start} 2026',
+        f'site:reddit.com r/nyc OR r/nycevents free event RSVP {start} 2026',
+        f'site:thrillist.com NYC free events {start} 2026',
+        f'NYC Japan Society free events {start} 2026',
+        f'NYC free AAPI Asian professional networking event {start} 2026',
+        f'NYC free investor real estate finance networking {start} 2026',
+    ]
+    for q in other_queries:
+        for r in search(q, max_results=3):
+            results.append(r)
+
+    return results
+
+
+def _gather_all_events(focus: str = "") -> list[dict]:
+    """
+    Run all source fetchers in parallel and combine results.
+    Returns deduplicated, stale-filtered list.
+    """
+    fetchers = {
+        "luma": _fetch_luma,
+        "eventbrite": _fetch_eventbrite,
+        "meetup": _fetch_meetup,
+        "x_rsvp": _fetch_x_rsvp,
+        "other": _fetch_other_sources,
+    }
+
+    all_results = []
+    seen_urls = set()
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(fn): name for name, fn in fetchers.items()}
+        for future in as_completed(futures):
+            try:
+                for r in future.result():
+                    if r.get("url") and r["url"] not in seen_urls:
+                        seen_urls.add(r["url"])
+                        all_results.append(r)
+            except Exception:
+                pass
+
+    # Add focus-specific queries on top if user has a specific interest
+    if focus:
+        start, end, today_iso, today = _get_date_range()
+        for q in [
+            f'NYC free events {focus} {start} 2026',
+            f'site:lu.ma NYC {focus} free {start} 2026',
+            f'site:eventbrite.com NYC {focus} free {start} 2026',
+        ]:
+            for r in search(q, max_results=4):
+                if r["url"] not in seen_urls:
+                    seen_urls.add(r["url"])
+                    all_results.append(r)
+
+    return _filter_stale(all_results)
+
+
 def _search_events(queries: list[str], max_per_query: int = 5) -> list[dict]:
-    """Run searches and return deduplicated, stale-filtered results."""
+    """Legacy: run searches and return deduplicated, stale-filtered results."""
     all_results = []
     seen_urls = set()
 
     for q in queries:
-        results = search(q, max_results=max_per_query)
-        for r in results:
+        for r in search(q, max_results=max_per_query):
             if r["url"] not in seen_urls:
                 seen_urls.add(r["url"])
                 all_results.append(r)
-        time.sleep(0.25)
+        time.sleep(0.2)
 
     return _filter_stale(all_results)
 
@@ -252,8 +467,7 @@ def handle(message: str = "") -> str:
     else:
         focus = ""
 
-    queries = _build_queries(focus)
-    results = _search_events(queries[:9])  # 9 queries on-demand for broad coverage
+    results = _gather_all_events(focus=focus)
 
     if not results:
         return (
@@ -265,7 +479,7 @@ def handle(message: str = "") -> str:
 
     start, end, today_iso, today = _get_date_range()
     cal_context = _pull_calendar_context()
-    context_block = format_results(results[:20])
+    context_block = format_results(results[:30])
 
     prompt = (
         f"TODAY IS {today_iso}. You are finding UPCOMING NYC events.\n\n"
@@ -300,8 +514,7 @@ def run_event_scan(send_all: bool = False) -> str:
     If send_all=True: return full roundup even if no hot events found.
     If send_all=False: only return message if hot events exist (daily-alert mode).
     """
-    queries = _build_queries()
-    results = _search_events(queries[:14])  # broader scan for scheduled runs
+    results = _gather_all_events()
 
     if not results:
         if send_all:
@@ -310,7 +523,7 @@ def run_event_scan(send_all: bool = False) -> str:
 
     start, end, today_iso, today = _get_date_range()
     cal_context = _pull_calendar_context()
-    context_block = format_results(results[:25])
+    context_block = format_results(results[:30])
 
     # Check if any results contain hot keywords — if so, flag as immediate alert
     hot = any(_is_hot_event(r.get("content", "") + r.get("title", "")) for r in results)
