@@ -67,8 +67,17 @@ async def _scrape_async() -> list[dict]:
             await page.wait_for_timeout(500)
             await page.click('button[type="submit"]')
 
-            # Wait for login redirect — Paperstac goes to homepage or /marketplace after login
-            await page.wait_for_load_state("networkidle", timeout=25000)
+            # Wait for URL to change away from login page (SPA navigation)
+            try:
+                await page.wait_for_url(
+                    lambda url: "login" not in url and "signin" not in url,
+                    timeout=15000
+                )
+            except Exception:
+                pass  # proceed and check URL manually
+
+            # Give React time to settle
+            await page.wait_for_timeout(3000)
             current_url = page.url
             logger.info(f"Paperstac: after login URL = {current_url}")
 
@@ -86,12 +95,10 @@ async def _scrape_async() -> list[dict]:
                 "https://paperstac.com/listings",
             ]:
                 await page.goto(listings_url, wait_until="domcontentloaded", timeout=30000)
-                await page.wait_for_load_state("networkidle", timeout=15000)
+                await page.wait_for_timeout(5000)  # let React render without waiting for networkidle
                 if page.url and "login" not in page.url:
                     logger.info(f"Paperstac: on listings page {page.url}")
                     break
-
-            await page.wait_for_timeout(4000)  # let React fully render
 
             # Scroll to load more listings
             for _ in range(3):
