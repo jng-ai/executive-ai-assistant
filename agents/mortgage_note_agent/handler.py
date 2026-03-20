@@ -55,18 +55,23 @@ For outreach emails, be professional but direct. Justin is a private investor
 buying for his portfolio, not a broker. Keep emails under 150 words."""
 
 SEARCH_QUERIES = [
-    # Direct marketplace listings — Paperstac (largest note marketplace)
-    'site:paperstac.com performing first lien note for sale',
-    'site:paperstac.com "first lien" "UPB" "$" performing',
-    # NotesDirect listings
-    'site:notesdirect.com "first lien" performing note "$" for sale',
-    # NoteXchange
-    'site:notexchange.com performing first lien mortgage note for sale',
-    # Broad marketplace search with price data signals
-    '"performing first lien" mortgage note "UPB" "$" "for sale" -blog -forum -article',
-    '"note for sale" "first lien" performing "UPB" "$" (TX OR FL OR GA OR NC OR TN OR AZ OR CO)',
-    # Direct seller / hedge fund listings
-    '"mortgage note" "first lien" performing "asking" "$" "UPB" 2026',
+    # Paperstac public listing pages (some are indexed)
+    'site:paperstac.com/listings performing first lien note',
+    'paperstac.com "performing" "first lien" "UPB" "$" note for sale 2026',
+    # NotesDirect — public listings
+    'site:notesdirect.com performing first lien note for sale "$"',
+    # NoteXchange public listings
+    'site:notexchange.com performing note "first lien" "$" for sale',
+    # FCI Exchange — public note marketplace
+    'site:fciexchange.com performing mortgage note first lien for sale',
+    # American Note Buyers / note broker sites
+    '"performing first lien" "note for sale" "UPB" "$" (TX OR FL OR GA OR TN OR NC OR AZ OR CO OR VA) 2025 OR 2026',
+    # Reddit r/MortgageNotes — real deals posted publicly
+    'site:reddit.com/r/MortgageNotes "for sale" "first lien" "UPB" "$" performing',
+    # BiggerPockets marketplace
+    'site:biggerpockets.com/marketplace "note" "first lien" performing "UPB" "$"',
+    # Direct seller signals — hedge funds liquidating notes
+    '"performing note" "first lien" "UPB" "$" "asking" (TX OR FL OR GA OR TN OR CO OR NC) seller 2026',
 ]
 
 
@@ -110,25 +115,32 @@ def _scan_for_deals(message: str) -> str:
             "🔍 *Mortgage Note Scan*\n\n"
             "No Tavily API key set — can't scan live listings.\n\n"
             "Add `TAVILY_API_KEY` to your `.env` (free at app.tavily.com)\n\n"
-            "In the meantime I can:\n"
+            "In the meantime:\n"
             "• Underwrite a deal: `underwrite UPB $85k, asking $62k, TX, performing`\n"
-            "• Draft seller outreach: `draft email to note seller on Paperstac`"
+            "• Draft seller outreach: `draft email to note seller on Paperstac`\n"
+            "• Browse directly: paperstac.com · notesdirect.com · notexchange.com"
         )
 
     context = format_results(unique[:20])
-
     state_list = ", ".join(NON_JUDICIAL_STATES)
+
     prompt = (
-        f"Scan these search results for ACTUAL mortgage note deal listings matching Justin's criteria:\n"
-        f"- Performing first lien only\n"
+        f"Scan these search results for ACTUAL mortgage note listings with real price data.\n\n"
+        f"Justin's criteria (strict):\n"
+        f"- Performing first lien notes ONLY\n"
         f"- UPB under $100,000\n"
-        f"- 20%+ discount preferred\n"
+        f"- Purchase price at least 20% below UPB\n"
         f"- Non-judicial states only: {state_list}\n\n"
-        f"Results:\n{context}\n\n"
-        f"IMPORTANT: List only REAL deals with actual prices/UPB numbers from the results. "
-        f"Do NOT list generic websites, blogs, forums, or 'lead sources' — only actual note listings with dollar figures. "
-        f"If no real listings found, say clearly: 'No live listings found today — try again tomorrow or go direct to paperstac.com.' "
-        f"Format each real deal using the template in your system prompt."
+        f"Search results:\n{context}\n\n"
+        f"STRICT RULES:\n"
+        f"1. Only include results that show an ACTUAL note for sale with a real dollar UPB or asking price\n"
+        f"2. Do NOT mention blogs, forums, articles, educational content, or general websites as 'leads'\n"
+        f"3. Do NOT mention BiggerPockets threads, WealthFormula, Facebook groups, or YouTube channels\n"
+        f"4. If you see a real listing — format it using your deal template with state, UPB, ask, yield, rating\n"
+        f"5. If there are NO real listings with dollar figures in the results, respond ONLY with:\n"
+        f"   '🔍 No live listings found today matching your criteria. Marketplaces may require login to view deals. "
+        f"   Try going directly to paperstac.com, notesdirect.com, or notexchange.com.'\n"
+        f"   Do NOT pad this with generic advice or sources."
     )
 
     return chat(SYSTEM, prompt, max_tokens=900)
