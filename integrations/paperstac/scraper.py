@@ -62,21 +62,36 @@ async def _scrape_async() -> list[dict]:
 
             # Fill credentials
             await page.fill('input[type="email"], input[name="email"]', email)
+            await page.wait_for_timeout(500)
             await page.fill('input[type="password"], input[name="password"]', password)
+            await page.wait_for_timeout(500)
             await page.click('button[type="submit"]')
 
-            # Wait for redirect after login
-            await page.wait_for_url("**/dashboard**", timeout=20000)
+            # Wait for login redirect — Paperstac goes to homepage or /marketplace after login
+            await page.wait_for_load_state("networkidle", timeout=25000)
+            current_url = page.url
+            logger.info(f"Paperstac: after login URL = {current_url}")
+
+            # Check we're no longer on the login page
+            if "login" in current_url or "signin" in current_url:
+                logger.error("Paperstac: still on login page — credentials may be wrong")
+                return []
+
             logger.info("Paperstac: logged in successfully")
 
             # ── Navigate to marketplace with filters ───────────────────────────
-            # Try to set performing + first lien filters via URL params
-            await page.goto(
-                LISTINGS_URL + "?noteType=performing&lienPosition=first",
-                wait_until="domcontentloaded",
-                timeout=30000,
-            )
-            await page.wait_for_timeout(3000)  # let React render
+            for listings_url in [
+                "https://paperstac.com/marketplace?noteType=performing&lienPosition=first",
+                "https://paperstac.com/marketplace",
+                "https://paperstac.com/listings",
+            ]:
+                await page.goto(listings_url, wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_load_state("networkidle", timeout=15000)
+                if page.url and "login" not in page.url:
+                    logger.info(f"Paperstac: on listings page {page.url}")
+                    break
+
+            await page.wait_for_timeout(4000)  # let React fully render
 
             # Scroll to load more listings
             for _ in range(3):
