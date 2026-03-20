@@ -69,10 +69,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📄 Reading document...", parse_mode="Markdown")
         response = await asyncio.to_thread(_handle_document_image, image_b64, caption)
 
-    elif image_type == "screenshot":
-        await update.message.reply_text("🖥 Analyzing screenshot...", parse_mode="Markdown")
-        response = await asyncio.to_thread(_handle_general_image, image_b64, caption)
-
     else:
         # general / unknown
         await update.message.reply_text("🔍 Analyzing image...", parse_mode="Markdown")
@@ -109,24 +105,29 @@ def _vision_call(image_b64: str, prompt: str, max_tokens: int = 600) -> str:
 def _triage_image(image_b64: str, caption: str = "") -> str:
     """
     Quick vision call to classify the image type.
-    Returns one of: food | event | receipt | document | screenshot | general
+    Returns one of: food | event | receipt | document | general
+    Screenshots are NOT a separate category — they route to whatever content they contain.
     """
     prompt = (
         "Look at this image carefully. Classify it into exactly ONE of these categories:\n\n"
-        "- food       → a meal, drink, snack, or food item\n"
-        "- event      → a save-the-date, party invite, wedding invite, event flyer, "
-        "               event announcement, or anything with a date/time/location for an event\n"
+        "- food       → a meal, drink, snack, or food item (photo or screenshot of food)\n"
+        "- event      → ANYTHING that contains event information: a date, time, location, "
+        "               or event name. This includes: save-the-dates, party invites, wedding invites, "
+        "               event flyers, event confirmation emails, RSVP confirmations, ticket screenshots, "
+        "               screenshots of Luma/Eventbrite/Partiful pages, email screenshots about events, "
+        "               or any screenshot/photo where a specific event date+location is visible.\n"
         "- receipt    → a store receipt, bill, invoice, or expense document\n"
-        "- document   → a contract, form, letter, article, handwritten note, or any text document\n"
-        "- screenshot → a screenshot of an app, website, or phone screen\n"
-        "- general    → anything else (person, place, art, object, meme, etc.)\n\n"
+        "- document   → a contract, form, letter, article, handwritten note, or general text document\n"
+        "- general    → anything else (person, place, art, object, meme, app screenshot without event info)\n\n"
+        "IMPORTANT: If an image is a screenshot but contains event info (date, time, venue), "
+        "classify it as 'event', not 'general'. The content matters more than the format.\n\n"
         f"User caption: '{caption}'\n\n"
         "Reply with ONLY the single category word. No explanation."
     )
     try:
         result = _vision_call(image_b64, prompt, max_tokens=10)
         category = result.strip().lower().split()[0]
-        valid = {"food", "event", "receipt", "document", "screenshot", "general"}
+        valid = {"food", "event", "receipt", "document", "general"}
         return category if category in valid else "general"
     except Exception as e:
         logger.error(f"Image triage error: {e}")

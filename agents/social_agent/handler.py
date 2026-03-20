@@ -18,6 +18,10 @@ from core.search import search, format_results
 
 SYSTEM = """You are an NYC event scout. Surface the best FREE or very low-cost upcoming NYC events.
 
+CRITICAL DATE RULE: You MUST only surface events that have NOT yet occurred. If a date appears
+in the search results that is before today's date, IGNORE that event entirely. Do not mention it.
+If you are unsure whether an event is upcoming or past, exclude it. When in doubt, leave it out.
+
 Priority event types (in order):
 1. Healthcare / health-tech / digital health networking
 2. Tech / startup / AI demo nights
@@ -56,18 +60,18 @@ HOT_KEYWORDS = [
 ]
 
 
-def _get_date_range() -> tuple[str, str, str]:
-    """Returns (today_str, end_str, today_iso) for filtering and display."""
+def _get_date_range() -> tuple[str, str, str, datetime.date]:
+    """Returns (today_str, end_str, today_iso, today_date) for filtering and display."""
     today = datetime.date.today()
     end = today + datetime.timedelta(days=10)
-    return today.strftime("%B %d"), end.strftime("%B %d, %Y"), today.isoformat()
+    return today.strftime("%B %d"), end.strftime("%B %d, %Y"), today.isoformat(), today
 
 
 # ── Query bank — organized by source/theme ────────────────────────────────────
 
 def _build_queries(focus: str = "") -> list[str]:
     """Build diverse search queries across all sources targeting Justin's interest areas."""
-    start, end, today_iso = _get_date_range()
+    start, end, today_iso, today = _get_date_range()
 
     base_queries = [
         # ── X / Twitter RSVP NYC (actual X posts with links) ──────────────────
@@ -147,8 +151,47 @@ def _is_hot_event(text: str) -> bool:
     return any(kw in text_lower for kw in HOT_KEYWORDS)
 
 
+def _filter_stale(results: list[dict]) -> list[dict]:
+    """
+    Drop results that clearly reference past years/months.
+    We check for year mentions older than current year and month strings before today.
+    This is a fast pre-filter before the LLM sees the data.
+    """
+    import re
+    today = datetime.date.today()
+    current_year = today.year
+    past_years = [str(y) for y in range(2020, current_year)]
+
+    # Month names that have fully passed this year
+    month_names = ["january","february","march","april","may","june",
+                   "july","august","september","october","november","december"]
+    past_months_this_year = [month_names[i] for i in range(today.month - 1)]  # months before current
+
+    kept = []
+    for r in results:
+        text = (r.get("title","") + " " + r.get("content","") + " " + r.get("url","")).lower()
+
+        # Drop if it references a clearly past year
+        if any(py in text for py in past_years):
+            continue
+
+        # Drop if it references a past month + this year (e.g. "january 2026" when it's March)
+        stale = False
+        for pm in past_months_this_year:
+            if pm in text and str(current_year) in text:
+                stale = True
+                break
+        if stale:
+            continue
+
+        kept.append(r)
+
+    # If filtering removed everything, return original (better than empty)
+    return kept if kept else results
+
+
 def _search_events(queries: list[str], max_per_query: int = 5) -> list[dict]:
-    """Run searches and return deduplicated results."""
+    """Run searches and return deduplicated, stale-filtered results."""
     all_results = []
     seen_urls = set()
 
@@ -160,7 +203,7 @@ def _search_events(queries: list[str], max_per_query: int = 5) -> list[dict]:
                 all_results.append(r)
         time.sleep(0.25)
 
-    return all_results
+    return _filter_stale(all_results)
 
 
 def _pull_calendar_context() -> str:
@@ -220,15 +263,18 @@ def handle(message: str = "") -> str:
             "I also browse: Luma (lu.ma/nyc), Eventbrite, and RSVP NYC."
         )
 
-    start, end, today_iso = _get_date_range()
+    start, end, today_iso, today = _get_date_range()
     cal_context = _pull_calendar_context()
     context_block = format_results(results[:20])
 
     prompt = (
-        f"Today's date is {today_iso}. Find the best 5–7 FREE or very low-cost NYC events "
-        f"that are UPCOMING — strictly on or after today ({start}). "
-        f"Do NOT include any events that have already passed.\n\n"
-        f"Date window: {start}–{end}\n\n"
+        f"TODAY IS {today_iso}. You are finding UPCOMING NYC events.\n\n"
+        f"STRICT RULE: Only include events occurring on or after {today_iso}. "
+        f"Any event that occurred before today is IRRELEVANT — exclude it completely. "
+        f"Do not mention events from January, February, or any past month of {today.year}, "
+        f"and do not mention any events from prior years. "
+        f"If you are not sure an event is in the future, exclude it.\n\n"
+        f"Date window to surface: {start}–{end}\n\n"
         f"{cal_context}\n\n"
         f"Search results:\n{context_block}\n\n"
         f"Priority order: (1) healthcare/health-tech, (2) tech/startup/AI, "
@@ -237,6 +283,7 @@ def handle(message: str = "") -> str:
         f"If any X/Twitter posts with event RSVP links appear in results, include them — "
         f"label source as 𝕏. Include Partiful links if found.\n"
         f"If recurring clubs or communities appear that are worth joining long-term, call them out.\n"
+        f"If fewer than 3 future events are found, say so honestly — do not invent events.\n"
         f"User query: {message}"
     )
 
@@ -261,7 +308,7 @@ def run_event_scan(send_all: bool = False) -> str:
             return "🗓 *Weekly Events Roundup*\n\nNo new events found this scan. Check lu.ma/nyc manually!"
         return ""
 
-    start, end, today_iso = _get_date_range()
+    start, end, today_iso, today = _get_date_range()
     cal_context = _pull_calendar_context()
     context_block = format_results(results[:25])
 
@@ -278,10 +325,13 @@ def run_event_scan(send_all: bool = False) -> str:
     )
 
     prompt = (
-        f"Today's date is {today_iso}. Find the best 6–8 FREE or very low-cost NYC events "
-        f"that are UPCOMING — strictly on or after today ({start}). "
-        f"Do NOT include any events that have already passed.\n\n"
-        f"Date window: {start}–{end}\n\n"
+        f"TODAY IS {today_iso}. You are finding UPCOMING NYC events for a proactive alert.\n\n"
+        f"STRICT RULE: Only include events occurring on or after {today_iso}. "
+        f"Any event before today is IRRELEVANT — exclude it entirely. "
+        f"Do not mention events from January, February, or any past month of {today.year}, "
+        f"and do not mention any events from prior years. "
+        f"If you cannot confirm an event is in the future, exclude it.\n\n"
+        f"Date window to surface: {start}–{end}\n\n"
         f"{cal_context}\n\n"
         f"Search results:\n{context_block}\n\n"
         f"Priority order: (1) healthcare/health-tech, (2) tech/startup/AI, "
@@ -292,6 +342,7 @@ def run_event_scan(send_all: bool = False) -> str:
         f"Include Partiful links if found. "
         f"If recurring clubs or communities worth joining long-term appear, add a separate "
         f"'🏛 Communities to Join' section at the end.\n"
+        f"If fewer than 3 future events are found in the results, say so honestly — do not invent events.\n"
         f"Format clearly for Telegram. Bold the top pick."
     )
 

@@ -391,18 +391,43 @@ def handle(message: str) -> str:
             count = len(workouts_this_week)
             goal  = TARGETS["workouts"]["goal"]
             remaining = max(0, goal - count)
+            streak = f"{count}/{goal} workouts this week"
+            # Generate rich workout insight
+            insight_prompt = (
+                f"Justin just logged this workout: {value}\n\n"
+                f"Provide a brief but useful post-workout analysis:\n"
+                f"1. 🔥 Estimated calories burned (give a range based on his ~175 lb bodyweight)\n"
+                f"2. 💪 Muscle groups / type worked (cardio, strength, recovery, etc.)\n"
+                f"3. ⏱ Recovery: what he should do in the next 24h (eat, stretch, rest, next session type)\n"
+                f"4. One specific coaching observation about this workout\n\n"
+                f"Be concise — 4 bullet points max. Phone-friendly."
+            )
+            insight = chat(SYSTEM, insight_prompt, max_tokens=250)
             if remaining == 0:
-                feedback = f"\n🔥 Hit your {goal}/week target! Consider an active recovery swim."
+                feedback = f"\n🔥 {streak} — weekly goal hit!\n\n{insight}"
             else:
-                feedback = f"\n💪 {count}/{goal} workouts this week — {remaining} more to hit goal"
-            # Suggest what to do next time
-            feedback += f"\n\n_Reply 'what workout next?' for your next session recommendation_"
+                feedback = f"\n💪 {streak} — {remaining} more to go\n\n{insight}"
 
         elif metric == "meal":
             label = _meal_label()
-            feedback = f"\n🥗 {label} logged"
+            # Generate nutrition insight for text-logged meals (same quality as photo handler)
+            insight_prompt = (
+                f"Justin just logged this {label.lower()}: {value}\n\n"
+                f"Estimate the nutrition for this meal. Be specific about portions if not stated.\n\n"
+                f"Format:\n"
+                f"📊 *Nutrition Estimate*\n"
+                f"• Calories: ~[X] kcal\n"
+                f"• Protein: ~[X]g\n"
+                f"• Carbs: ~[X]g\n"
+                f"• Fat: ~[X]g\n\n"
+                f"✅ *Strengths* — [1 bullet for his goals]\n"
+                f"⚠️ *Watch out* — [1 bullet if anything is off]\n"
+                f"💡 *Tip* — [One coaching note]"
+            )
+            meal_insight = chat(SYSTEM, insight_prompt, max_tokens=250)
+            feedback = f"\n🥗 *{label} logged*\n\n{meal_insight}"
             # Running nutrition balance
-            nutrition = _nutrition_balance_response(new_meal=message)
+            nutrition = _nutrition_balance_response(new_meal=value)
             if nutrition:
                 feedback += f"\n\n{nutrition}"
 

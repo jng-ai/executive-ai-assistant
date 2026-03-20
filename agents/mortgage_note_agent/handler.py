@@ -13,7 +13,7 @@ Non-judicial states: TX, GA, FL, NC, TN, AZ, CO, MI, VA, MO, WA, OR, NV,
                     AL, AR, CA, ID, MN, MS, MT, NE, NH, NM, OK, SD, UT, WY
 """
 
-import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from core.llm import chat
 from core.search import search, format_results
 
@@ -55,13 +55,18 @@ For outreach emails, be professional but direct. Justin is a private investor
 buying for his portfolio, not a broker. Keep emails under 150 words."""
 
 SEARCH_QUERIES = [
-    "site:paperstac.com performing mortgage notes first lien",
-    "performing first lien mortgage notes for sale discount 2026",
-    "NoteXchange performing notes first lien under 100k",
-    "mortgage notes direct seller performing first lien non-judicial state",
-    '"performing note" "first lien" for sale investor 2026 discount',
-    "paperstac.com mortgage note listing performing",
-    "notes direct mortgage note marketplace performing first lien",
+    # Direct marketplace listings — Paperstac (largest note marketplace)
+    'site:paperstac.com performing first lien note for sale',
+    'site:paperstac.com "first lien" "UPB" "$" performing',
+    # NotesDirect listings
+    'site:notesdirect.com "first lien" performing note "$" for sale',
+    # NoteXchange
+    'site:notexchange.com performing first lien mortgage note for sale',
+    # Broad marketplace search with price data signals
+    '"performing first lien" mortgage note "UPB" "$" "for sale" -blog -forum -article',
+    '"note for sale" "first lien" performing "UPB" "$" (TX OR FL OR GA OR NC OR TN OR AZ OR CO)',
+    # Direct seller / hedge fund listings
+    '"mortgage note" "first lien" performing "asking" "$" "UPB" 2026',
 ]
 
 
@@ -82,13 +87,16 @@ def handle(message: str = "") -> str:
 
 
 def _scan_for_deals(message: str) -> str:
-    """Search marketplaces for deals matching Justin's criteria."""
+    """Search marketplaces for deals matching Justin's criteria — parallel searches."""
     all_results = []
 
-    for q in SEARCH_QUERIES[:5]:
-        results = search(q, max_results=6)
-        all_results.extend(results)
-        time.sleep(0.3)
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(search, q, 5): q for q in SEARCH_QUERIES}
+        for future in as_completed(futures):
+            try:
+                all_results.extend(future.result())
+            except Exception:
+                pass
 
     # Deduplicate
     seen, unique = set(), []
@@ -111,14 +119,16 @@ def _scan_for_deals(message: str) -> str:
 
     state_list = ", ".join(NON_JUDICIAL_STATES)
     prompt = (
-        f"Scan these search results for mortgage note deals matching Justin's criteria:\n"
+        f"Scan these search results for ACTUAL mortgage note deal listings matching Justin's criteria:\n"
         f"- Performing first lien only\n"
         f"- UPB under $100,000\n"
         f"- 20%+ discount preferred\n"
         f"- Non-judicial states only: {state_list}\n\n"
         f"Results:\n{context}\n\n"
-        f"User request: {message}\n\n"
-        f"Identify real deal listings or strong lead sources. Skip generic articles."
+        f"IMPORTANT: List only REAL deals with actual prices/UPB numbers from the results. "
+        f"Do NOT list generic websites, blogs, forums, or 'lead sources' — only actual note listings with dollar figures. "
+        f"If no real listings found, say clearly: 'No live listings found today — try again tomorrow or go direct to paperstac.com.' "
+        f"Format each real deal using the template in your system prompt."
     )
 
     return chat(SYSTEM, prompt, max_tokens=900)
