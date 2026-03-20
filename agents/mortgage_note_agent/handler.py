@@ -16,6 +16,11 @@ Non-judicial states: TX, GA, FL, NC, TN, AZ, CO, MI, VA, MO, WA, OR, NV,
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from core.llm import chat
 from core.search import search, format_results
+from integrations.paperstac.scraper import (
+    is_configured as paperstac_configured,
+    scrape_listings,
+    format_deals,
+)
 
 NON_JUDICIAL_STATES = [
     "TX", "GA", "FL", "NC", "TN", "AZ", "CO", "MI", "VA", "MO",
@@ -92,7 +97,38 @@ def handle(message: str = "") -> str:
 
 
 def _scan_for_deals(message: str) -> str:
-    """Search marketplaces for deals matching Justin's criteria — parallel searches."""
+    """
+    Scan for matching note deals.
+    If Paperstac credentials are set: log in and fetch live authenticated listings.
+    Otherwise: fall back to Tavily web search across public marketplace pages.
+    """
+    # ── Authenticated Paperstac scan (preferred) ──────────────────────────────
+    if paperstac_configured():
+        try:
+            deals = scrape_listings()
+            result = format_deals(deals)
+
+            # If Paperstac had deals, also run a quick Tavily search for other sources
+            if deals:
+                extra = _tavily_scan()
+                if extra:
+                    result += f"\n\n---\n*Other sources:*\n{extra}"
+            return result
+        except Exception as e:
+            # Fall through to Tavily if Paperstac fails
+            pass
+
+    # ── Tavily fallback ───────────────────────────────────────────────────────
+    return _tavily_scan() or (
+        "🔍 *Mortgage Note Scan*\n\n"
+        "No results found. Add `PAPERSTAC_EMAIL` + `PAPERSTAC_PASSWORD` to your `.env` "
+        "for authenticated live listings, or add `TAVILY_API_KEY` for web search fallback.\n\n"
+        "Direct: paperstac.com · notesdirect.com · notexchange.com"
+    )
+
+
+def _tavily_scan() -> str:
+    """Fallback Tavily web search across public note marketplaces."""
     all_results = []
 
     with ThreadPoolExecutor(max_workers=4) as executor:
