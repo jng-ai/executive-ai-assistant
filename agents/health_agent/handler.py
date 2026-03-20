@@ -82,25 +82,38 @@ Workout guidance:
 
 PARSE_PROMPT = """Extract a health log entry from this message. Return JSON only, no commentary.
 
-If the message is a health log (weight, sleep, workout, or meal), return:
+CRITICAL RULE: Only return is_log:true if the person is REPORTING something they ALREADY DID or their current stats.
+Return is_log:false for ANY question, request, or correction — even if it mentions health topics.
+
+If the message IS a completed log, return:
 {"is_log": true, "metric": "<weight|sleep|workout|meal>", "value": "<extracted value>", "unit": "<lbs|hours|session|food log>"}
 
 Rules:
-- weight: extract number in lbs
-- sleep: calculate total hours. "Slept 12:10am to 7:40am" = 7.5 hours
-- workout: any exercise. Value = description of activity
-- meal: food they ATE. NOT corrections or questions
+- weight: extract number in lbs. Must be a plain weight statement.
+- sleep: calculate total hours from times given. "Slept 12:10am to 7:40am" = 7.5 hours
+- workout: ONLY if they clearly completed it. Value = description of what they did.
+- meal: ONLY food they actually ate. NOT corrections, questions, or future plans.
 
-If NOT a health log (correction, question, request), return:
-{"is_log": false}
+Return is_log:false if the message:
+- Asks a question ("what should I...", "can I...", "how do I...")
+- Makes a request ("give me", "suggest", "help me", "recommend")
+- Is a correction ("it's not a meal", "I meant")
+- Mentions doing something AND asks what to do next (log only the done part if clear, else false)
+- Is ambiguous about whether it was completed
 
 Examples:
 "Slept from 12:10am to 7:40am" → {"is_log":true,"metric":"sleep","value":"7.5","unit":"hours"}
 "weight 174" → {"is_log":true,"metric":"weight","value":"174","unit":"lbs"}
 "swam 30 mins" → {"is_log":true,"metric":"workout","value":"swam 30 mins","unit":"session"}
+"I did 30min swimming laps" → {"is_log":true,"metric":"workout","value":"30min swimming laps","unit":"session"}
 "had chicken and rice" → {"is_log":true,"metric":"meal","value":"chicken and rice","unit":"food log"}
 "what should I eat" → {"is_log":false}
-"give me a workout" → {"is_log":false}"""
+"give me a workout" → {"is_log":false}
+"give me a quick workout routine I started some biceps already" → {"is_log":false}
+"It's sleep not meal" → {"is_log":false}
+"I did biceps today what should I do tomorrow" → {"is_log":true,"metric":"workout","value":"biceps","unit":"session"}
+"can I have pizza" → {"is_log":false}
+"give me some insight on that workout" → {"is_log":false}"""
 
 
 # ── Keyword sets ──────────────────────────────────────────────────────────────
@@ -119,6 +132,12 @@ WORKOUT_DONE_KEYWORDS = [
     "logged", "did", "completed", "finished", "swam", "ran", "lifted",
     "started", "just", "already", "done",
 ]
+INSIGHT_KEYWORDS = [
+    "insight", "insights", "analyze", "analysis", "tell me about", "how was",
+    "what was", "breakdown", "break down", "review", "evaluate", "feedback",
+    "thoughts on", "assess",
+]
+
 FOOD_SUGGEST_KEYWORDS = [
     "what should i eat", "what to eat", "what can i eat", "suggest a meal",
     "food suggestion", "meal idea", "what for lunch", "what for dinner",
@@ -201,19 +220,32 @@ def _nutrition_balance_response(new_meal: str = "") -> str:
     if new_meal:
         meal_descriptions += f"\n- {new_meal} (just logged)"
 
+    h = _et_hour()
+    if h < 12:
+        remaining_meals = "lunch and dinner"
+    elif h < 16:
+        remaining_meals = "an afternoon snack and dinner"
+    elif h < 20:
+        remaining_meals = "dinner"
+    else:
+        remaining_meals = "an evening snack if needed"
+
     prompt = (
         f"Justin's meals today:\n{meal_descriptions}\n\n"
-        f"Daily targets: ~1,900 kcal, 150g protein, ~150g carbs, ~60g fat.\n\n"
-        "Estimate total macros consumed so far today. Then tell him:\n"
-        "1. Running total (cal / protein / carbs / fat)\n"
-        "2. What's still needed to hit targets\n"
-        "3. One specific food or meal to eat next to close the gap\n\n"
+        f"Daily targets: ~1,900 kcal, 150g protein, ~150g carbs, ~60g fat.\n"
+        f"Current time: {'morning' if h < 12 else 'afternoon' if h < 17 else 'evening'}.\n\n"
+        "Estimate total macros consumed so far. Then:\n"
+        "1. Show running total (cal / protein / carbs / fat)\n"
+        "2. Show what's still needed to hit targets\n"
+        f"3. Suggest specific meals for {remaining_meals} to close the gap — each with cal + protein estimate\n\n"
         "Format:\n"
         "📊 *Today so far:* ~[X] kcal · [X]g protein · [X]g carbs · [X]g fat\n"
         "🎯 *Still need:* ~[X] kcal · [X]g protein\n"
-        "💡 *Next:* [Specific food suggestion — e.g. '2 eggs + Greek yogurt = ~30g protein, ~200 kcal']"
+        f"🍽 *Next meals ({remaining_meals}):*\n"
+        "• [Meal option 1] — ~[X] kcal · [X]g protein\n"
+        "• [Meal option 2] — ~[X] kcal · [X]g protein"
     )
-    return chat(SYSTEM, prompt, max_tokens=200)
+    return chat(SYSTEM, prompt, max_tokens=300)
 
 
 def _what_to_eat(message: str) -> str:
@@ -347,9 +379,17 @@ def handle(message: str) -> str:
     has_suggest = any(w in msg_lower for w in WORKOUT_SUGGEST_KEYWORDS)
     has_topic   = any(w in msg_lower for w in WORKOUT_TOPIC_KEYWORDS)
     has_done    = any(w in msg_lower for w in WORKOUT_DONE_KEYWORDS)
+    has_insight = any(w in msg_lower for w in INSIGHT_KEYWORDS)
+
+    # ── Insight/analysis request about a past workout or meal ─────────────────
+    # e.g. "give me some insight on that workout" — analyze recent logs, don't plan next session
+    if has_insight and has_topic:
+        recent = get_health_summary(3)
+        context = f"Justin's recent health logs (last 3 days):\n{json.dumps(recent, indent=2)}\n\nRequest: {message}"
+        return chat(SYSTEM, context, max_tokens=400)
 
     # ── Pure workout suggestion ───────────────────────────────────────────────
-    if (has_suggest or has_topic) and not has_done:
+    if (has_suggest or has_topic) and not has_done and not has_insight:
         return _suggest_workout(message)
 
     # ── Try to parse as a log entry ───────────────────────────────────────────
