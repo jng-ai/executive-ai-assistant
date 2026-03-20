@@ -31,8 +31,13 @@ Priority event types (in order):
 5. Food & drink events (tastings, happy hours, open bars, ramen, sake, dim sum)
 6. General free NYC networking and community events
 
-Sources to surface links from when found: Luma (lu.ma), Eventbrite, Partiful, X/Twitter
-RSVP posts, Time Out NYC, Thrillist, Reddit r/nyc, nycfreeevents.com.
+Sources to surface links from when found: Luma (lu.ma), Eventbrite, Meetup, Partiful,
+X/Twitter RSVP posts, Instagram (#RSVPnyc, #NYCevents, #NYCpopup),
+Time Out NYC, Thrillist, Reddit r/nyc, nycfreeevents.com.
+
+When Instagram content appears in results, label it as 📸 Instagram and include the hashtag or
+account handle if visible. Instagram posts often surface pop-up events and food/drink events
+before they appear on formal listing sites.
 
 Format each event as:
 🗓 *[Event Name]*
@@ -329,6 +334,62 @@ def _fetch_x_rsvp() -> list[dict]:
     return results
 
 
+def _fetch_instagram() -> list[dict]:
+    """
+    Scan Instagram for NYC event posts.
+    Instagram blocks direct API access, so we use three layers:
+    1. Public Instagram viewer proxies (Picuki, Imginn) for hashtag feeds
+    2. Tavily site:instagram.com — Google indexes some public posts
+    3. Broad searches that surface pages embedding Instagram event posts
+    All results are forward-date filtered before reaching the LLM.
+    """
+    start, end, today_iso, today = _get_date_range()
+    results = []
+
+    # ── Layer 1: Public Instagram viewer proxies ──────────────────────────────
+    # These allow hashtag browsing without login
+    ig_proxy_urls = [
+        # Hashtag feeds on Picuki
+        "https://www.picuki.com/tag/RSVPnyc",
+        "https://www.picuki.com/tag/NYCevents",
+        "https://www.picuki.com/tag/NYCfreeevents",
+        "https://www.picuki.com/tag/NYCpopup",
+        "https://www.picuki.com/tag/NYChealthtech",
+        # Imginn as backup proxy
+        "https://imginn.com/tags/rsvpnyc/",
+        "https://imginn.com/tags/nycevents/",
+        "https://imginn.com/tags/nycfreeevents/",
+    ]
+    for url in ig_proxy_urls:
+        content = fetch_page(url, max_chars=3000)
+        if content and len(content) > 300:
+            results.append({"title": f"Instagram: {url}", "url": url, "content": content})
+
+    # ── Layer 2: Tavily site:instagram.com — indexes some public posts ────────
+    ig_search_queries = [
+        f'site:instagram.com "RSVP NYC" free event 2026',
+        f'site:instagram.com NYC free event {start} 2026',
+        f'site:instagram.com NYC popup free {start} 2026',
+        f'site:instagram.com NYC health tech networking event {start} 2026',
+        f'site:instagram.com NYC AAPI Asian Japanese free event {start} 2026',
+        f'site:instagram.com NYC food drink tasting popup {start} 2026',
+    ]
+    for q in ig_search_queries:
+        for r in search(q, max_results=4):
+            results.append(r)
+
+    # ── Layer 3: Pages that aggregate or embed Instagram NYC event posts ──────
+    agg_queries = [
+        f'"instagram" "RSVP NYC" free event {start} 2026',
+        f'"instagram.com" NYC free event pop-up RSVP {start} 2026',
+    ]
+    for q in agg_queries:
+        for r in search(q, max_results=3):
+            results.append(r)
+
+    return results
+
+
 def _fetch_other_sources() -> list[dict]:
     """
     Fetch from Partiful, Time Out NYC, Reddit, Thrillist, and other sources.
@@ -373,13 +434,14 @@ def _gather_all_events(focus: str = "") -> list[dict]:
         "eventbrite": _fetch_eventbrite,
         "meetup": _fetch_meetup,
         "x_rsvp": _fetch_x_rsvp,
+        "instagram": _fetch_instagram,
         "other": _fetch_other_sources,
     }
 
     all_results = []
     seen_urls = set()
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    with ThreadPoolExecutor(max_workers=6) as executor:
         futures = {executor.submit(fn): name for name, fn in fetchers.items()}
         for future in as_completed(futures):
             try:
@@ -494,8 +556,9 @@ def handle(message: str = "") -> str:
         f"Priority order: (1) healthcare/health-tech, (2) tech/startup/AI, "
         f"(3) Asian/AAPI/Japanese/HK cultural or professional, (4) pop-ups and flash events, "
         f"(5) food & drink, (6) general free NYC.\n"
-        f"If any X/Twitter posts with event RSVP links appear in results, include them — "
-        f"label source as 𝕏. Include Partiful links if found.\n"
+        f"If any X/Twitter posts with event RSVP links appear in results, label source as 𝕏. "
+        f"If Instagram posts appear (#RSVPnyc, #NYCevents, #NYCpopup), label source as 📸 Instagram. "
+        f"Include Partiful, Meetup, and Meetup group links if found.\n"
         f"If recurring clubs or communities appear that are worth joining long-term, call them out.\n"
         f"If fewer than 3 future events are found, say so honestly — do not invent events.\n"
         f"User query: {message}"
