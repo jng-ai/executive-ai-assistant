@@ -44,8 +44,8 @@ Format each event as:
 📍 [Venue / Neighborhood]
 🕐 [Date & Time]
 💰 [Free / Cost]
-📌 [Source: Luma / Eventbrite / 𝕏 / Partiful / etc.]
-🔗 [RSVP or event link — include if found]
+📌 [Source: Luma / Eventbrite / Meetup / 𝕏 / 📸 Instagram / Partiful / etc.]
+🔗 [Direct RSVP link — must be the specific event page URL, never a category/listing page]
 ✨ [One line: why this is worth going to]
 
 Rules:
@@ -151,6 +151,70 @@ SOURCE_LABELS = {
 }
 
 
+def _extract_event_urls(content: str, listing_url: str) -> list[str]:
+    """
+    Parse individual event page URLs from a listing/category page's content.
+    Returns specific event URLs — not the listing page itself.
+
+    Patterns by platform:
+    - Eventbrite: /e/event-name-tickets-1234567890
+    - Luma:       lu.ma/abc123  or  lu.ma/event/slug
+    - Meetup:     meetup.com/group-name/events/1234567890/
+    - Partiful:   partiful.com/e/abc123
+    - Instagram:  instagram.com/p/abc123  or  /reel/abc123
+    """
+    import re
+    found = []
+
+    patterns = [
+        # Eventbrite individual event pages
+        (r'https?://(?:www\.)?eventbrite\.com/e/[\w\-]+-\d{6,}', "eventbrite"),
+        # Luma individual event pages (short slug, not /discover or /nyc)
+        (r'https?://lu\.ma/(?!nyc|discover|home|calendar|about|pricing|blog|event$)[a-z0-9]{4,16}(?!\w)', "luma"),
+        # Luma /event/slug format
+        (r'https?://lu\.ma/event/[\w\-]+', "luma"),
+        # Meetup individual event pages
+        (r'https?://(?:www\.)?meetup\.com/[\w\-]+/events/\d{6,}/?', "meetup"),
+        # Partiful individual event pages
+        (r'https?://(?:www\.)?partiful\.com/e/[\w\-]+', "partiful"),
+        # Instagram posts
+        (r'https?://(?:www\.)?instagram\.com/(?:p|reel)/[\w\-]+/?', "instagram"),
+        # Picuki/Imginn individual post pages
+        (r'https?://(?:www\.)?picuki\.com/media/\d+', "instagram"),
+    ]
+
+    for pattern, _ in patterns:
+        for match in re.finditer(pattern, content):
+            url = match.group(0).rstrip(".,;)'\"")
+            if url not in found:
+                found.append(url)
+
+    return found[:20]  # cap to avoid noise
+
+
+def _listing_page_to_events(content: str, listing_url: str, source_label: str) -> list[dict]:
+    """
+    Convert a fetched listing page into individual event result dicts
+    by extracting specific event URLs from the page content.
+    Falls back to returning the listing page itself if no event URLs found.
+    """
+    event_urls = _extract_event_urls(content, listing_url)
+
+    if not event_urls:
+        # No individual links found — return the listing page as-is
+        return [{"title": source_label, "url": listing_url, "content": content}]
+
+    # Return each individual event URL as its own result, with the listing content as context
+    results = []
+    for url in event_urls:
+        results.append({
+            "title": f"{source_label} event",
+            "url": url,
+            "content": content[:600],  # listing page content as context
+        })
+    return results
+
+
 def _is_hot_event(text: str) -> bool:
     """Return True if event description contains high-priority trigger keywords."""
     text_lower = text.lower()
@@ -212,9 +276,9 @@ def _fetch_luma() -> list[dict]:
         "https://lu.ma/discover?query=NYC+Asian+AAPI&start=today",
     ]
     for url in luma_urls:
-        content = fetch_page(url, max_chars=4000)
+        content = fetch_page(url, max_chars=6000)
         if content and len(content) > 200:
-            results.append({"title": f"Luma Events: {url}", "url": url, "content": content})
+            results.extend(_listing_page_to_events(content, url, "Luma NYC"))
 
     # Also run targeted Tavily searches to surface specific Luma event pages
     luma_queries = [
@@ -245,9 +309,9 @@ def _fetch_eventbrite() -> list[dict]:
         "https://www.eventbrite.com/d/ny--new-york/health--events/",
     ]
     for url in eb_urls:
-        content = fetch_page(url, max_chars=4000)
+        content = fetch_page(url, max_chars=6000)
         if content and len(content) > 200:
-            results.append({"title": f"Eventbrite NYC: {url}", "url": url, "content": content})
+            results.extend(_listing_page_to_events(content, url, "Eventbrite NYC"))
 
     # Tavily searches for specific Eventbrite event pages
     eb_queries = [
@@ -276,9 +340,9 @@ def _fetch_meetup() -> list[dict]:
         "https://www.meetup.com/find/?keywords=startup+networking&location=New+York%2C+NY&source=EVENTS&eventType=inPerson",
     ]
     for url in meetup_urls:
-        content = fetch_page(url, max_chars=3000)
+        content = fetch_page(url, max_chars=6000)
         if content and len(content) > 200:
-            results.append({"title": "Meetup NYC Events", "url": url, "content": content})
+            results.extend(_listing_page_to_events(content, url, "Meetup NYC"))
 
     meetup_queries = [
         f'site:meetup.com NYC free health tech digital health networking {start} 2026',
@@ -361,9 +425,9 @@ def _fetch_instagram() -> list[dict]:
         "https://imginn.com/tags/nycfreeevents/",
     ]
     for url in ig_proxy_urls:
-        content = fetch_page(url, max_chars=3000)
+        content = fetch_page(url, max_chars=6000)
         if content and len(content) > 300:
-            results.append({"title": f"Instagram: {url}", "url": url, "content": content})
+            results.extend(_listing_page_to_events(content, url, "Instagram"))
 
     # ── Layer 2: Tavily site:instagram.com — indexes some public posts ────────
     ig_search_queries = [
@@ -404,9 +468,9 @@ def _fetch_other_sources() -> list[dict]:
         "https://www.nycfreeevents.com",
     ]
     for url in other_urls:
-        content = fetch_page(url, max_chars=3000)
+        content = fetch_page(url, max_chars=6000)
         if content and len(content) > 200:
-            results.append({"title": f"Events: {url}", "url": url, "content": content})
+            results.extend(_listing_page_to_events(content, url, "NYC Events"))
 
     # Partiful + Reddit + Thrillist via search
     other_queries = [
@@ -560,6 +624,10 @@ def handle(message: str = "") -> str:
         f"If Instagram posts appear (#RSVPnyc, #NYCevents, #NYCpopup), label source as 📸 Instagram. "
         f"Include Partiful, Meetup, and Meetup group links if found.\n"
         f"If recurring clubs or communities appear that are worth joining long-term, call them out.\n"
+        f"LINK RULE: Each event's 🔗 link MUST be the direct event registration/RSVP page "
+        f"(e.g. eventbrite.com/e/..., lu.ma/abc123, meetup.com/group/events/123, partiful.com/e/...). "
+        f"NEVER use a category or listing page (e.g. eventbrite.com/d/..., lu.ma/nyc, meetup.com/find) "
+        f"as the event link. If you only have a listing page URL and no specific event URL, omit the link.\n"
         f"If fewer than 3 future events are found, say so honestly — do not invent events.\n"
         f"User query: {message}"
     )
