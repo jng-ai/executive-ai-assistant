@@ -10,8 +10,69 @@ from googleapiclient.discovery import build
 from integrations.google.auth import get_credentials, is_configured
 
 
-def _service():
-    return build("gmail", "v1", credentials=get_credentials(), cache_discovery=False)
+def _service(account: str = "primary"):
+    return build("gmail", "v1", credentials=get_credentials(account), cache_discovery=False)
+
+
+# Senders / subject patterns that indicate event/booking confirmations
+_CONFIRMATION_PATTERNS = [
+    "you're registered", "you're going", "you're in", "registration confirmed",
+    "booking confirmed", "reservation confirmed", "rsvp confirmed", "you're attending",
+    "ticket confirmed", "order confirmed", "your ticket", "your reservation",
+    "confirmation for", "confirmed:", "see you there", "you've registered",
+    "luma", "eventbrite", "partiful", "meetup", "resy", "opentable", "tock",
+    "your flight", "your hotel", "itinerary", "check-in", "boarding pass",
+]
+
+
+def is_confirmation_email(subject: str, snippet: str, sender: str) -> bool:
+    """Return True if this email looks like an event/booking confirmation."""
+    text = f"{subject} {snippet} {sender}".lower()
+    return any(p in text for p in _CONFIRMATION_PATTERNS)
+
+
+def list_unread_all_accounts(max_results: int = 10) -> list[dict]:
+    """
+    Return recent unread emails from BOTH Gmail accounts.
+    Each result includes an 'account' field: 'jynpriority' or 'jngai53'.
+    """
+    results = []
+
+    # Primary: jynpriority@gmail.com
+    try:
+        primary = list_unread(max_results=max_results, account="primary")
+        for e in primary:
+            e["account"] = "jynpriority@gmail.com"
+        results.extend(primary)
+    except Exception as e:
+        pass
+
+    # Secondary: jngai5.3@gmail.com
+    if is_configured("secondary"):
+        try:
+            secondary = list_unread(max_results=max_results, account="secondary")
+            for e in secondary:
+                e["account"] = "jngai5.3@gmail.com"
+            results.extend(secondary)
+        except Exception:
+            pass
+
+    # Sort by date descending (most recent first)
+    results.sort(key=lambda x: x.get("date", ""), reverse=True)
+    return results[:max_results * 2]
+
+
+def scan_confirmation_emails(max_results: int = 20) -> list[dict]:
+    """
+    Scan jngai5.3@gmail.com (and primary) for unread confirmation/RSVP emails.
+    Returns emails flagged as confirmations with is_confirmation=True.
+    """
+    all_emails = list_unread_all_accounts(max_results=max_results)
+    return [
+        {**e, "is_confirmation": True}
+        for e in all_emails
+        if is_confirmation_email(e.get("subject",""), e.get("snippet",""), e.get("from",""))
+    ]
 
 
 def send_email(to: str, subject: str, body: str, html: bool = False) -> bool:
@@ -53,12 +114,12 @@ def create_draft(to: str, subject: str, body: str) -> dict | None:
         return None
 
 
-def list_unread(max_results: int = 10) -> list[dict]:
+def list_unread(max_results: int = 10, account: str = "primary") -> list[dict]:
     """Return recent unread emails with sender, subject, snippet."""
-    if not is_configured():
+    if not is_configured(account):
         return []
     try:
-        svc = _service()
+        svc = _service(account)
         result = svc.users().messages().list(
             userId="me", q="is:unread", maxResults=max_results
         ).execute()

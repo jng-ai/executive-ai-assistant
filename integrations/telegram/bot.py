@@ -22,7 +22,7 @@ from agents.finance_agent.handler import handle as finance_handle
 from agents.bonus_alert.handler import handle as bonus_alert_handle, run_bonus_scan
 from agents.market_agent.handler import handle as market_handle
 from agents.calendar_agent.handler import handle as calendar_handle, run_morning_briefing, run_eod_calendar
-from agents.email_agent.handler import handle as email_handle, run_morning_digest, run_eod_email_summary
+from agents.email_agent.handler import handle as email_handle, run_morning_digest, run_eod_email_summary, scan_and_triage_confirmations
 from agents.followup_agent.handler import handle as followup_handle, run_pending_followups
 from agents.general_handler import handle_general
 
@@ -667,6 +667,21 @@ async def _scheduled_email_digest(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Email digest error: {e}")
 
 
+async def _scheduled_confirmation_scan(context: ContextTypes.DEFAULT_TYPE):
+    """Daily 8:05 AM — scan both Gmail accounts for unread confirmation/RSVP emails,
+    extract event details, and auto-create Google Calendar events."""
+    try:
+        result = await asyncio.to_thread(scan_and_triage_confirmations)
+        if result:
+            chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+            if chat_id:
+                await context.bot.send_message(
+                    chat_id=chat_id, text=result, parse_mode="Markdown"
+                )
+    except Exception as e:
+        logger.error(f"Confirmation scan error: {e}")
+
+
 async def _scheduled_event_scan(context: ContextTypes.DEFAULT_TYPE):
     """
     Twice-weekly NYC event scan — Tuesdays + Fridays at 9 AM ET.
@@ -761,6 +776,15 @@ def run_bot():
             name="daily_email_digest",
         )
         logger.info("Scheduled daily email digest at 7:50 AM ET")
+
+        # Confirmation email scan — 8:10 AM ET daily
+        # Scans both jynpriority + jngai5.3 for RSVP/booking confirmations → auto-calendar
+        job_queue.run_daily(
+            _scheduled_confirmation_scan,
+            time=dt.time(hour=8, minute=10, tzinfo=ET),
+            name="daily_confirmation_scan",
+        )
+        logger.info("Scheduled daily confirmation scan at 8:10 AM ET")
 
     logger.info("Bot running. Send /start to your bot in Telegram.")
     app.run_polling(drop_pending_updates=True)

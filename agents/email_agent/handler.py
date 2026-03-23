@@ -120,26 +120,40 @@ def handle(message: str) -> str:
         )
 
     from integrations.google.gmail_client import (
-        send_email, create_draft, list_unread, search_emails, format_emails,
-        get_email_body, reply_to_email, list_needs_reply, _triage_urgency
+        send_email, create_draft, list_unread, list_unread_all_accounts,
+        scan_confirmation_emails, search_emails, format_emails,
+        get_email_body, reply_to_email, list_needs_reply, _triage_urgency,
+        is_confirmation_email
     )
+    from integrations.google.auth import is_configured as google_is_configured
 
     parsed = _parse_request(message)
     action = parsed.get("action", "question")
 
-    # ── List unread with urgency triage ─────────────────────────────────────
+    # ── List unread across both accounts ─────────────────────────────────────
     if action == "list_unread":
-        emails = list_unread(max_results=8)
+        emails = list_unread_all_accounts(max_results=10)
         _last_email_list = emails
         if not emails:
-            return "📭 Inbox zero — nothing unread!"
-        formatted = format_emails(emails, triage=True)
-        return (
-            f"📬 *Unread ({len(emails)}):*\n\n"
-            f"{formatted}\n\n"
-            f"_🔴 urgent · 🟡 needs reply · ⚪ FYI_\n"
-            f"_Reply 'read 2' to open any email_"
-        )
+            return "📭 Inbox zero across both accounts — nothing unread!"
+
+        # Group by account for display
+        jyn = [e for e in emails if "jynpriority" in e.get("account", "")]
+        j53 = [e for e in emails if "jngai5.3" in e.get("account", "")]
+
+        lines = [f"📬 *Unread ({len(emails)} total)*\n"]
+
+        if jyn:
+            lines.append(f"*jynpriority@gmail.com ({len(jyn)}):*")
+            lines.append(format_emails(jyn, triage=True))
+
+        if j53:
+            lines.append(f"\n*jngai5.3@gmail.com ({len(j53)}):*")
+            lines.append(format_emails(j53, triage=True))
+
+        lines.append("\n_🔴 urgent · 🟡 needs reply · ⚪ FYI_")
+        lines.append("_Reply 'read 2' to open any email_")
+        return "\n".join(lines)
 
     # ── Read full email body ─────────────────────────────────────────────────
     elif action == "read":
@@ -370,4 +384,106 @@ def run_eod_email_summary() -> str:
         return "\n".join(lines)
     except Exception as e:
         print(f"EOD email summary error: {e}")
+        return ""
+
+
+def scan_and_triage_confirmations() -> str:
+    """
+    Scan both Gmail accounts for unread confirmation/RSVP emails.
+    For each one found: extract event details and auto-create a Google Calendar event.
+    Called by the scheduled morning digest AND on-demand.
+    Returns a formatted summary or empty string if nothing found.
+    """
+    if not is_configured():
+        return ""
+    try:
+        from integrations.google.gmail_client import scan_confirmation_emails, get_email_body
+        from integrations.google.calendar_client import create_event
+        import datetime, re
+
+        confirmations = scan_confirmation_emails(max_results=20)
+        if not confirmations:
+            return ""
+
+        lines = ["📨 *Confirmation emails found:*\n"]
+        created_events = []
+
+        for email in confirmations:
+            subject = email.get("subject", "")
+            sender  = email.get("from", "").split("<")[0].strip()
+            snippet = email.get("snippet", "")
+            account = email.get("account", "")
+
+            # Try to extract full body for better event parsing
+            full_body = ""
+            try:
+                full = get_email_body(email["id"])
+                full_body = full.get("body", "")[:2000]
+            except Exception:
+                full_body = snippet
+
+            # Use LLM to extract event details
+            extract_prompt = (
+                f"Extract event details from this confirmation email. Return JSON only.\n\n"
+                f"Subject: {subject}\nFrom: {sender}\nBody: {full_body}\n\n"
+                "Return:\n"
+                '{"is_event": true/false, "name": "event name", "date": "YYYY-MM-DD or empty", '
+                '"start_time": "HH:MM 24h or empty", "end_time": "HH:MM 24h or empty", '
+                '"location": "address or venue name or empty", "notes": "any key details"}\n\n'
+                "If this is not a calendar event (e.g. a product order, newsletter), return {\"is_event\": false}"
+            )
+            try:
+                raw = chat("You are a calendar event extractor. Return valid JSON only.", extract_prompt, max_tokens=200)
+                raw = raw.strip().strip("```json").strip("```").strip()
+                event_data = json.loads(raw)
+            except Exception:
+                event_data = {"is_event": False}
+
+            line = f"• *{subject}* — {sender} _(via {account})_"
+
+            if event_data.get("is_event") and event_data.get("date"):
+                try:
+                    date_str  = event_data["date"]
+                    start_str = event_data.get("start_time", "00:00")
+                    end_str   = event_data.get("end_time", "")
+                    name      = event_data.get("name", subject)
+                    location  = event_data.get("location", "")
+                    notes     = event_data.get("notes", "")
+
+                    # Build ISO datetimes
+                    start_iso = f"{date_str}T{start_str}:00"
+                    if end_str:
+                        end_iso = f"{date_str}T{end_str}:00"
+                    else:
+                        # Default to 2h duration if no end time
+                        sh, sm = map(int, start_str.split(":"))
+                        end_h = (sh + 2) % 24
+                        end_iso = f"{date_str}T{end_h:02d}:{sm:02d}:00"
+
+                    result = create_event(
+                        summary=name,
+                        start=start_iso,
+                        end=end_iso,
+                        location=location,
+                        description=f"Auto-imported from confirmation email\n{notes}\nFrom: {sender}",
+                    )
+                    if result:
+                        line += f"\n  ✅ Added to calendar: *{name}* on {date_str}"
+                        created_events.append(name)
+                    else:
+                        line += f"\n  ⚠️ Could not create calendar event"
+                except Exception as ce:
+                    line += f"\n  ⚠️ Calendar error: {ce}"
+            else:
+                line += "\n  _(no event date found — review manually)_"
+
+            lines.append(line)
+
+        if created_events:
+            lines.append(f"\n🗓 *{len(created_events)} event(s) auto-added to your calendar*")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        print(f"Confirmation scan error: {e}")
         return ""

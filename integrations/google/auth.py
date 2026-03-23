@@ -14,17 +14,28 @@ SCOPES = [
 ]
 
 
-def get_credentials() -> Credentials:
-    """Return valid Google credentials using stored refresh token."""
+def get_credentials(account: str = "primary") -> Credentials:
+    """
+    Return valid Google credentials using stored refresh token.
+    account: "primary" (jynpriority@gmail.com) or "secondary" (jngai5.3@gmail.com)
+    """
     client_id     = os.environ.get("GOOGLE_CLIENT_ID", "")
     client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-    refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN", "")
 
-    if not all([client_id, client_secret, refresh_token]):
-        raise ValueError(
-            "Missing GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, or GOOGLE_REFRESH_TOKEN in .env\n"
-            "Run: python scripts/google_auth.py"
-        )
+    if account == "secondary":
+        refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN_JNGAI53", "")
+        if not refresh_token:
+            raise ValueError(
+                "Missing GOOGLE_REFRESH_TOKEN_JNGAI53 in .env\n"
+                "Run: python scripts/google_auth_jngai53.py"
+            )
+    else:
+        refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN", "")
+        if not all([client_id, client_secret, refresh_token]):
+            raise ValueError(
+                "Missing GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, or GOOGLE_REFRESH_TOKEN in .env\n"
+                "Run: python scripts/google_auth.py"
+            )
 
     creds = Credentials(
         token=None,
@@ -38,7 +49,13 @@ def get_credentials() -> Credentials:
     return creds
 
 
-def is_configured() -> bool:
+def is_configured(account: str = "primary") -> bool:
+    if account == "secondary":
+        return bool(
+            os.environ.get("GOOGLE_CLIENT_ID") and
+            os.environ.get("GOOGLE_CLIENT_SECRET") and
+            os.environ.get("GOOGLE_REFRESH_TOKEN_JNGAI53")
+        )
     return all([
         os.environ.get("GOOGLE_CLIENT_ID"),
         os.environ.get("GOOGLE_CLIENT_SECRET"),
