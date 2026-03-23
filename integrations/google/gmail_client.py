@@ -62,12 +62,24 @@ def list_unread_all_accounts(max_results: int = 10) -> list[dict]:
     return results[:max_results * 2]
 
 
-def scan_confirmation_emails(max_results: int = 20) -> list[dict]:
+def scan_confirmation_emails(max_results: int = 30) -> list[dict]:
     """
-    Scan jngai5.3@gmail.com (and primary) for unread confirmation/RSVP emails.
+    Scan both accounts for confirmation/RSVP emails from the last 7 days.
     Returns emails flagged as confirmations with is_confirmation=True.
     """
-    all_emails = list_unread_all_accounts(max_results=max_results)
+    # Search last 7 days across both accounts (not just unread)
+    results = []
+    for account, label in [("primary", "jynpriority@gmail.com"), ("secondary", "jngai5.3@gmail.com")]:
+        if not is_configured(account):
+            continue
+        try:
+            emails = search_emails("newer_than:7d", max_results=max_results, account=account)
+            for e in emails:
+                e["account"] = label
+            results.extend(emails)
+        except Exception:
+            pass
+    all_emails = results
     return [
         {**e, "is_confirmation": True}
         for e in all_emails
@@ -144,12 +156,12 @@ def list_unread(max_results: int = 10, account: str = "primary") -> list[dict]:
         return []
 
 
-def search_emails(query: str, max_results: int = 5) -> list[dict]:
+def search_emails(query: str, max_results: int = 5, account: str = "primary") -> list[dict]:
     """Search emails with Gmail query syntax."""
-    if not is_configured():
+    if not is_configured(account):
         return []
     try:
-        svc = _service()
+        svc = _service(account)
         result = svc.users().messages().list(
             userId="me", q=query, maxResults=max_results
         ).execute()
@@ -174,12 +186,12 @@ def search_emails(query: str, max_results: int = 5) -> list[dict]:
         return []
 
 
-def get_email_body(msg_id: str) -> dict:
+def get_email_body(msg_id: str, account: str = "primary") -> dict:
     """Fetch the full body of an email by message ID."""
-    if not is_configured():
+    if not is_configured(account):
         return {}
     try:
-        svc = _service()
+        svc = _service(account)
         msg = svc.users().messages().get(
             userId="me", id=msg_id, format="full"
         ).execute()

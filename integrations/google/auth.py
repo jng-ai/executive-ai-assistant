@@ -7,11 +7,18 @@ import os
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 
-SCOPES = [
+SCOPES_PRIMARY = [
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.send",
 ]
+# Secondary account (jngai5.3) — Gmail only, no Calendar
+SCOPES_SECONDARY = [
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.send",
+]
+# Keep backwards-compatible alias
+SCOPES = SCOPES_PRIMARY
 
 
 def get_credentials(account: str = "primary") -> Credentials:
@@ -37,13 +44,14 @@ def get_credentials(account: str = "primary") -> Credentials:
                 "Run: python scripts/google_auth.py"
             )
 
+    scopes = SCOPES_SECONDARY if account == "secondary" else SCOPES_PRIMARY
     creds = Credentials(
         token=None,
         refresh_token=refresh_token,
         token_uri="https://oauth2.googleapis.com/token",
         client_id=client_id,
         client_secret=client_secret,
-        scopes=SCOPES,
+        scopes=scopes,
     )
     creds.refresh(Request())
     return creds

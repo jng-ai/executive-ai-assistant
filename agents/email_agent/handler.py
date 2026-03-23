@@ -415,9 +415,12 @@ def scan_and_triage_confirmations() -> str:
             account = email.get("account", "")
 
             # Try to extract full body for better event parsing
+            # Use the correct account for the email
+            acct = "secondary" if "jngai5.3" in email.get("account", "") else "primary"
             full_body = ""
             try:
-                full = get_email_body(email["id"])
+                from integrations.google.gmail_client import get_email_body as _get_body
+                full = _get_body(email["id"], account=acct)
                 full_body = full.get("body", "")[:2000]
             except Exception:
                 full_body = snippet
@@ -441,18 +444,34 @@ def scan_and_triage_confirmations() -> str:
 
             line = f"• *{subject}* — {sender} _(via {account})_"
 
+            # Skip events in the past
+            import datetime as _dt
+            event_date_str = event_data.get("date", "")
+            try:
+                event_date = _dt.date.fromisoformat(event_date_str)
+                if event_date < _dt.date.today():
+                    line += "\n  _(event date is in the past — skipped)_"
+                    lines.append(line)
+                    continue
+            except Exception:
+                pass  # if date is invalid, let the create_event attempt handle it
+
             if event_data.get("is_event") and event_data.get("date"):
                 try:
                     date_str  = event_data["date"]
-                    start_str = event_data.get("start_time", "00:00")
-                    end_str   = event_data.get("end_time", "")
-                    name      = event_data.get("name", subject)
-                    location  = event_data.get("location", "")
-                    notes     = event_data.get("notes", "")
+                    start_str = event_data.get("start_time") or "19:00"  # default 7 PM if unknown
+                    end_str   = event_data.get("end_time") or ""
+                    name      = event_data.get("name") or subject
+                    location  = event_data.get("location") or ""
+                    notes     = event_data.get("notes") or ""
+
+                    # Validate start_str format — must be HH:MM
+                    if not start_str or ":" not in start_str:
+                        start_str = "19:00"
 
                     # Build ISO datetimes
                     start_iso = f"{date_str}T{start_str}:00"
-                    if end_str:
+                    if end_str and ":" in end_str:
                         end_iso = f"{date_str}T{end_str}:00"
                     else:
                         # Default to 2h duration if no end time
@@ -461,7 +480,7 @@ def scan_and_triage_confirmations() -> str:
                         end_iso = f"{date_str}T{end_h:02d}:{sm:02d}:00"
 
                     result = create_event(
-                        summary=name,
+                        title=name,
                         start=start_iso,
                         end=end_iso,
                         location=location,
