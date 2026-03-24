@@ -37,6 +37,14 @@ def run_bot():
     except Exception:
         pass
 
+    # Start web dashboard server in background thread (port 8080)
+    try:
+        from integrations.web.server import start as start_web
+        start_web(port=8080)
+        print("Web dashboard started on http://localhost:8080")
+    except Exception as e:
+        print(f"Web dashboard failed to start: {e}")
+
     from integrations.telegram.bot import run_bot
     run_bot()
 
