@@ -744,6 +744,41 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 
+async def _scheduled_origin_refresh(context: ContextTypes.DEFAULT_TYPE):
+    """Daily Origin Financial data refresh — runs at 8:15 AM ET.
+    Scrapes budget, spending, investments, equity, and credit score from Origin.
+    Sends a brief alert if budget is significantly over target.
+    """
+    try:
+        from integrations.origin.scraper import scrape, is_configured, load_snapshot
+        if not is_configured():
+            return
+
+        await asyncio.to_thread(scrape)
+        snap = load_snapshot()
+
+        # Check for budget overrun — alert if over 120%
+        text = snap.get("dashboard_text", "")
+        for line in text.split("\n"):
+            if "%" in line and any(kw in line.lower() for kw in ["budget", "spent"]):
+                try:
+                    import re
+                    pct_match = re.search(r"(\d+\.?\d*)\s*%", line)
+                    if pct_match and float(pct_match.group(1)) > 120:
+                        chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+                        if chat_id:
+                            await context.bot.send_message(
+                                chat_id=chat_id,
+                                text=f"⚠️ *Origin Budget Alert*\n{line.strip()}\n_Origin data refreshed — ask 'budget summary' for details._",
+                                parse_mode="Markdown",
+                            )
+                        break
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.error(f"Origin refresh error: {e}")
+
+
 async def _scheduled_bonus_scan(context: ContextTypes.DEFAULT_TYPE):
     """Daily bonus alert scan — runs automatically at 8 AM."""
     try:
@@ -958,6 +993,15 @@ def run_bot():
             name="daily_confirmation_scan",
         )
         logger.info("Scheduled daily confirmation scan at 8:10 AM ET")
+
+        # Origin Financial data refresh — 8:15 AM ET daily
+        # Scrapes budget, spending, investments, equity from Origin → data/origin_snapshot.json
+        job_queue.run_daily(
+            _scheduled_origin_refresh,
+            time=dt.time(hour=8, minute=15, tzinfo=ET),
+            name="daily_origin_refresh",
+        )
+        logger.info("Scheduled daily Origin Financial refresh at 8:15 AM ET")
 
     logger.info("Bot running. Send /start to your bot in Telegram.")
     app.run_polling(drop_pending_updates=True)

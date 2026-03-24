@@ -450,6 +450,55 @@ async def api_email():
         return JSONResponse({"accounts": [], "total_count": 0, "error": str(e), "configured": False})
 
 
+# ── Agent query endpoint ───────────────────────────────────────────────────────
+
+_AGENT_HANDLERS = {
+    "health":     ("agents.health_agent.handler",     "handle"),
+    "finance":    ("agents.finance_agent.handler",    "handle"),
+    "market":     ("agents.market_agent.handler",     "handle"),
+    "calendar":   ("agents.calendar_agent.handler",   "handle"),
+    "email":      ("agents.email_agent.handler",      "handle"),
+    "travel":     ("agents.travel_agent.handler",     "handle"),
+    "followup":   ("agents.followup_agent.handler",   "handle"),
+    "bonus":      ("agents.bonus_alert.handler",      "handle"),
+    "social":     ("agents.social_agent.handler",     "handle"),
+    "mortgage":   ("agents.mortgage_note_agent.handler","handle"),
+    "infusion":   ("agents.infusion_agent.handler",   "handle"),
+    "investment": ("agents.investment_agent.handler", "handle"),
+}
+
+_DEFAULT_QUERIES = {
+    "health":     "give me a full health summary and what I should focus on today",
+    "finance":    "give me a financial summary and any actions I should take",
+    "market":     "give me a market briefing",
+    "calendar":   "what does my schedule look like",
+    "email":      "summarize my unread emails",
+    "travel":     "show me current flight deals and award opportunities",
+    "followup":   "list all my pending follow-ups",
+    "bonus":      "what are the best current credit card and bank bonuses",
+    "social":     "what events are happening in NYC this week",
+    "mortgage":   "scan for performing mortgage note deals on Paperstac",
+    "infusion":   "give me an infusion center ops intel briefing",
+    "investment": "give me a watchlist briefing",
+}
+
+@app.get("/api/agent/{agent_name}")
+async def api_agent_query(agent_name: str, q: str = ""):
+    """Call an agent's handle() function and return the response."""
+    if agent_name not in _AGENT_HANDLERS:
+        raise HTTPException(status_code=404, detail=f"Unknown agent: {agent_name}")
+    module_path, fn_name = _AGENT_HANDLERS[agent_name]
+    query = q or _DEFAULT_QUERIES.get(agent_name, "status")
+    try:
+        import importlib
+        mod = importlib.import_module(module_path)
+        fn  = getattr(mod, fn_name)
+        result = await _run_sync(fn, query)
+        return JSONResponse({"agent": agent_name, "query": query, "response": result, "ok": True})
+    except Exception as e:
+        return JSONResponse({"agent": agent_name, "query": query, "response": str(e), "ok": False})
+
+
 # ── Action endpoints ───────────────────────────────────────────────────────────
 
 @app.post("/api/action/{action_name}")

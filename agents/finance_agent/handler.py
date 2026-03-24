@@ -950,6 +950,8 @@ def _finance_review(message: str) -> str:
     results = search("personal finance strategy high income W2 1099 rental 2025 tax optimization", max_results=3)
     context = format_results(results) if results else ""
 
+    origin_ctx = _origin_finance_context()
+
     prompt = f"""Conduct a holistic financial review for Justin. Be his pocket CFP.
 
 Current data:
@@ -957,6 +959,7 @@ Current data:
 - This month's logged spending: ${total_out:,.0f} out / ${total_in:,.0f} in
 - Side hustle ideas in pipeline: {', '.join(idea_names) if idea_names else 'none'}
 - User question/context: {message}
+{origin_ctx}
 
 {TAX_CONTEXT}
 
@@ -1067,16 +1070,34 @@ If cannot parse: {"type": null}"""
     )
 
 
+def _origin_finance_context() -> str:
+    """Pull live Origin Financial budget/spending data as context string."""
+    try:
+        from integrations.origin.scraper import get_finance_context
+        return get_finance_context()
+    except Exception:
+        return ""
+
+
 def _budget_summary() -> str:
     budget = _load_budget()
     today  = datetime.date.today()
     month_start = today.replace(day=1).isoformat()
     month_entries = [e for e in budget if e.get("date", "") >= month_start]
 
+    # Prepend Origin data if available
+    origin_ctx = _origin_finance_context()
+
     if not month_entries:
+        if origin_ctx:
+            return chat(
+                SYSTEM + _profile_context(),
+                f"Give a budget summary for Justin based on this Origin Financial data:\n{origin_ctx}\n\nToday: {today}",
+                max_tokens=500,
+            )
         return (
             f"📊 *Budget — {today.strftime('%B %Y')}*\n\n"
-            "Nothing logged yet.\n"
+            "Nothing manually logged yet.\n"
             "_Start with: 'spent $50 on groceries'_"
         )
 
@@ -1098,6 +1119,9 @@ def _budget_summary() -> str:
     if total_in:
         lines.append(f"💰 Total in: *${total_in:,.0f}*")
         lines.append(f"📈 Net: *${total_in - total_out:+,.0f}*")
+
+    if origin_ctx:
+        lines.append(f"\n_Origin Financial data also available — ask for a full review._")
 
     return "\n".join(lines)
 

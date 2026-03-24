@@ -17,17 +17,18 @@ DATA_DIR = Path(__file__).parent.parent.parent / "data"
 # ── Agent registry — order controls dashboard layout ─────────────────────────
 
 AGENTS = [
-    {"key": "health",    "emoji": "💪", "label": "Health"},
-    {"key": "finance",   "emoji": "💰", "label": "Finance"},
-    {"key": "market",    "emoji": "📈", "label": "Market"},
-    {"key": "calendar",  "emoji": "📅", "label": "Calendar"},
-    {"key": "email",     "emoji": "📧", "label": "Email"},
-    {"key": "social",    "emoji": "🎉", "label": "Social"},
-    {"key": "travel",    "emoji": "✈️",  "label": "Travel"},
-    {"key": "mortgage",  "emoji": "🏠", "label": "Mortgage Notes"},
-    {"key": "infusion",  "emoji": "🏥", "label": "Infusion"},
-    {"key": "followup",  "emoji": "🔔", "label": "Follow-ups"},
-    {"key": "bonus",     "emoji": "🎯", "label": "Bonus Alerts"},
+    {"key": "health",      "emoji": "💪", "label": "Health"},
+    {"key": "finance",     "emoji": "💰", "label": "Finance"},
+    {"key": "investment",  "emoji": "📊", "label": "Investments"},
+    {"key": "market",      "emoji": "📈", "label": "Market"},
+    {"key": "calendar",    "emoji": "📅", "label": "Calendar"},
+    {"key": "email",       "emoji": "📧", "label": "Email"},
+    {"key": "social",      "emoji": "🎉", "label": "Social"},
+    {"key": "travel",      "emoji": "✈️",  "label": "Travel"},
+    {"key": "mortgage",    "emoji": "🏠", "label": "Mortgage Notes"},
+    {"key": "infusion",    "emoji": "🏥", "label": "Infusion"},
+    {"key": "followup",    "emoji": "🔔", "label": "Follow-ups"},
+    {"key": "bonus",       "emoji": "🎯", "label": "Bonus Alerts"},
 ]
 
 
@@ -77,6 +78,14 @@ def _health_oneliner() -> str:
 
 
 def _finance_oneliner() -> str:
+    # Try Origin snapshot first for live budget data
+    try:
+        from integrations.origin.scraper import get_dashboard_status, load_snapshot
+        snap = load_snapshot()
+        if snap:
+            return get_dashboard_status()
+    except Exception:
+        pass
     profile = _load_json(DATA_DIR / "financial_profile.json")
     if isinstance(profile, dict) and profile.get("last_updated"):
         return f"Profile updated {_days_ago(profile['last_updated'])}"
@@ -84,6 +93,24 @@ def _finance_oneliner() -> str:
     if isinstance(bonuses, dict) and bonuses.get("last_scan"):
         return f"Bonus scan {_days_ago(bonuses['last_scan'])}"
     return "Ready"
+
+
+def _investment_oneliner() -> str:
+    try:
+        from integrations.origin.scraper import load_snapshot, snapshot_age_hours
+        snap = load_snapshot()
+        if snap and snap.get("investments_text"):
+            age = snapshot_age_hours()
+            age_str = f"{age:.0f}h ago" if age is not None else "?"
+            # Pull first meaningful line from investments text
+            for line in snap["investments_text"].split("\n"):
+                line = line.strip()
+                if line and "$" in line and len(line) > 5:
+                    return f"Origin synced {age_str} · {line[:50]}"
+            return f"Origin portfolio synced {age_str}"
+    except Exception:
+        pass
+    return "Ask for portfolio analysis · watchlist: UNH, AGIO, VEEV"
 
 
 def _market_oneliner() -> str:
@@ -184,17 +211,18 @@ def _bonus_oneliner() -> str:
 
 
 _ONELINERS = {
-    "health":   _health_oneliner,
-    "finance":  _finance_oneliner,
-    "market":   _market_oneliner,
-    "calendar": _calendar_oneliner,
-    "email":    _email_oneliner,
-    "social":   _social_oneliner,
-    "travel":   _travel_oneliner,
-    "mortgage": _mortgage_oneliner,
-    "infusion": _infusion_oneliner,
-    "followup": _followup_oneliner,
-    "bonus":    _bonus_oneliner,
+    "health":      _health_oneliner,
+    "finance":     _finance_oneliner,
+    "investment":  _investment_oneliner,
+    "market":      _market_oneliner,
+    "calendar":    _calendar_oneliner,
+    "email":       _email_oneliner,
+    "social":      _social_oneliner,
+    "travel":      _travel_oneliner,
+    "mortgage":    _mortgage_oneliner,
+    "infusion":    _infusion_oneliner,
+    "followup":    _followup_oneliner,
+    "bonus":       _bonus_oneliner,
 }
 
 
