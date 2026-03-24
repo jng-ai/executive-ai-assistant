@@ -22,8 +22,15 @@ WATCHLIST = ["UNH", "AGIO", "ACAD", "VEEV", "IIPR", "HIMS"]
 _yf_cache: dict = {}
 _YF_TTL = 300  # seconds
 
+# Status cache — expensive Google API calls (email/calendar) cached for 2 min
+# so /api/summary never blocks waiting for OAuth
+_status_cache: dict = {}
+_STATUS_TTL = 120  # seconds
+
 app = FastAPI(title="Executive AI Dashboard", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
 
 
 # ── Generic helpers ────────────────────────────────────────────────────────────
@@ -51,6 +58,51 @@ def _days_ago(iso: str) -> str:
 def _et_now() -> datetime.datetime:
     et = datetime.timezone(datetime.timedelta(hours=-5))
     return datetime.datetime.now(tz=et)
+
+
+# ── Status cache (avoids blocking /api/summary on slow Google calls) ───────────
+
+def _cached_status(key: str, fn, placeholder: dict = None):
+    """Return cached status immediately; always refresh in background when stale.
+    Never blocks the caller — on first call returns placeholder until bg refresh completes."""
+    import threading
+    entry   = _status_cache.get(key)
+    now     = datetime.datetime.now()
+    is_warm = entry and (now - entry["ts"]).total_seconds() < _STATUS_TTL
+
+    if is_warm:
+        return entry["val"]
+
+    # Return stale or placeholder immediately, kick off background refresh
+    default = placeholder or {"label": key.title(), "icon": "⚙️", "status": "gray", "summary": "Refreshing…"}
+    current = entry["val"] if entry else default
+
+    def _refresh():
+        try:
+            val = fn()
+            _status_cache[key] = {"val": val, "ts": datetime.datetime.now()}
+        except Exception:
+            pass
+    threading.Thread(target=_refresh, daemon=True).start()
+    return current
+
+
+def _prewarm_status_cache():
+    """Kick off background pre-warming of slow status calls at startup."""
+    import threading
+    _PLACEHOLDERS = {
+        "email":    {"label": "Email",    "icon": "📧", "status": "gray", "summary": "Checking…"},
+        "calendar": {"label": "Calendar", "icon": "📅", "status": "gray", "summary": "Checking…"},
+    }
+    for key, fn in [("email", _email_status), ("calendar", _calendar_status)]:
+        p = _PLACEHOLDERS[key]
+        def _warm(k=key, f=fn):
+            try:
+                val = f()
+                _status_cache[k] = {"val": val, "ts": datetime.datetime.now()}
+            except Exception:
+                pass
+        threading.Thread(target=_warm, daemon=True).start()
 
 
 # ── yfinance helpers ───────────────────────────────────────────────────────────
@@ -121,7 +173,9 @@ def _email_urgency(subject: str, snippet: str, sender: str) -> int:
 
 @app.get("/api/summary")
 async def api_summary():
-    """All agent statuses in one call — main dashboard poll."""
+    """All agent statuses in one call — main dashboard poll.
+    Expensive Google-API status calls are served from cache so this
+    endpoint always returns in <200ms."""
     et = _et_now()
     return JSONResponse({
         "server_time": et.strftime("%a %b %-d, %-I:%M %p ET"),
@@ -129,8 +183,8 @@ async def api_summary():
             "health":     _health_status(),
             "finance":    _finance_status(),
             "market":     _market_status(),
-            "calendar":   _calendar_status(),
-            "email":      _email_status(),
+            "calendar":   _cached_status("calendar", _calendar_status),
+            "email":      _cached_status("email",    _email_status),
             "travel":     _travel_status(),
             "followup":   _followup_status(),
             "bonus":      _bonus_status(),
@@ -634,4 +688,6 @@ def start(port: int = 8080):
     server = uvicorn.Server(config)
     t = threading.Thread(target=server.run, daemon=True)
     t.start()
+    # Pre-warm slow Google status caches in background so first /api/summary is fast
+    _prewarm_status_cache()
     return t
