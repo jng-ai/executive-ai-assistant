@@ -136,7 +136,24 @@ def _social_oneliner() -> str:
 
 
 def _travel_oneliner() -> str:
-    return "Ask about award flights or travel deals"
+    try:
+        from agents.travel_agent.handler import get_status
+        s = get_status()
+        if not s["live"]:
+            return "Ask about award flights or travel deals"
+        parts = []
+        if s["steals"]:
+            parts.append(f"🔥 {s['steals']} steal{'s' if s['steals'] > 1 else ''}")
+        if s["alerts"]:
+            parts.append(f"🔔 {s['alerts']} deal{'s' if s['alerts'] > 1 else ''}")
+        if s["awards"]:
+            parts.append(f"✨ {s['awards']} award")
+        if not parts:
+            return "No deals this scan · Mon/Wed/Fri 8AM"
+        last = _days_ago(s["last_updated"][:10]) if s.get("last_updated") else "recently"
+        return ", ".join(parts) + f" · scanned {last}"
+    except Exception:
+        return "Ask about award flights or travel deals"
 
 
 def _mortgage_oneliner() -> str:
@@ -362,15 +379,61 @@ def _social_dashboard() -> str:
 
 
 def _travel_dashboard() -> str:
-    return (
-        "✈️ *Travel Dashboard*\n\n"
-        "*Quick actions:*\n"
-        "• 'Award flights to Tokyo' → miles/points search\n"
-        "• 'Best use of Chase points' → redemption ideas\n"
-        "• 'Business class to Asia under 80k miles' → targeted search\n"
-        "• Send a flight screenshot → deal evaluation\n\n"
-        "_Asia-focused · award + paid fare analysis_"
-    )
+    lines = ["✈️ *Travel Dashboard*\n"]
+    try:
+        from agents.travel_agent.handler import get_status
+        s = get_status()
+
+        if s["live"]:
+            last = _days_ago(s["last_updated"][:10]) if s.get("last_updated") else "recently"
+            lines.append(f"🔄 Last scan: {last} · Mon/Wed/Fri 8AM EST")
+            lines.append(f"Routes: EWR/JFK → Tokyo, Seoul, Bangkok, London, Paris, Rome, Cancun, Dubai")
+            lines.append("")
+
+            if s["steals"] or s["alerts"] or s["awards"]:
+                summary_parts = []
+                if s["steals"]: summary_parts.append(f"🔥 {s['steals']} steal{'s' if s['steals']>1 else ''}")
+                if s["alerts"]: summary_parts.append(f"🔔 {s['alerts']} deal{'s' if s['alerts']>1 else ''}")
+                if s["awards"]: summary_parts.append(f"✨ {s['awards']} award")
+                if s["below"]:  summary_parts.append(f"— {s['below']} below threshold")
+                lines.append("*Current scan results:* " + " · ".join(summary_parts))
+                lines.append("")
+
+                top_deals = s["deals"][:5]
+                if top_deals:
+                    lines.append("*Top deals:*")
+                    for d in top_deals:
+                        badge = "🔥" if d.get("priority") == "steal" else "🔔" if d.get("priority") == "alert" else "✨"
+                        route = d.get("route", "?")
+                        price = d.get("price", "?")
+                        meta  = (d.get("meta") or "")[:40]
+                        pct   = f" ({d.get('pctUnder',0)}% under)" if d.get("pctUnder", 0) > 0 else ""
+                        lines.append(f"{badge} {route} — {price}{pct}")
+                        if meta:
+                            lines.append(f"   _{meta}_")
+                lines.append("")
+            else:
+                lines.append("_No deals meeting thresholds this scan_")
+                lines.append("")
+        else:
+            lines.append("_Live data unavailable — flight-tracker may be setting up_")
+            lines.append("")
+    except Exception as e:
+        lines.append(f"_Could not load live data: {e}_")
+        lines.append("")
+
+    lines += [
+        "*Quick actions:*",
+        "• 'Flight deals' → current scan summary",
+        "• 'Award flights to Tokyo' → miles/points search",
+        "• 'Best use of Chase points' → redemption strategy",
+        "• 'Transfer bonus Chase to United' → check transfer deals",
+        "• Send a flight screenshot → deal evaluation",
+        "",
+        "_Tracker: github.com/jng-ai/flight-tracker_",
+        "_Programs: Alaska · AAdvantage · Amex MR · Chase UR · Cathay · United_",
+    ]
+    return "\n".join(lines)
 
 
 def _mortgage_dashboard() -> str:
