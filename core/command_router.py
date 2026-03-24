@@ -16,7 +16,7 @@ ROUTER_PROMPT = """You are a message classifier. Classify the user's message int
 - investment_research  : stocks, portfolio, market ideas, investment analysis
 - travel_hack          : award flights, miles, travel deals, points optimization
 - nyc_events           : NYC events, meetups, networking, things to do
-- personal_finance     : bank signup bonuses, credit card SUBs, budget tracking, spending, eligibility rules, Doctor of Credit, Frequent Miler
+- personal_finance     : bank signup bonuses, credit card SUBs, budget tracking, spending, eligibility rules, Doctor of Credit, Frequent Miler, re-eligibility check, logging a new card/bank application, tax strategy, side hustle ideas, passive income, financial review, update financial profile
 - bonus_alert          : check for elevated bonuses, scan for deals, bonus alert status, force scan, check bonuses now
 - market_intel         : stock market analysis, sector rotation, macro view, earnings catalysts, specific stock/ETF ideas, market briefing, trade ideas, JP Morgan style analysis
 - daily_briefing       : morning briefing, summary, what's happening today
