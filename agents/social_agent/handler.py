@@ -1,15 +1,15 @@
 """
 NYC Social & Events Agent — personalized free event scout for Justin Ngai.
 
-Sources: Luma (lu.ma/nyc), Eventbrite, "RSVP NYC" Twitter/X style searches,
-         Instagram events, Japanese/AAPI/healthcare community events.
+Sources: Luma (lu.ma/nyc), Eventbrite, Meetup, Partiful, Yelp Events,
+         nycgo.com, allevents.in, do.nyc, Time Out NYC, Thrillist, Reddit,
+         X/Twitter ("RSVP NYC", "sign up NYC"), Instagram (#RSVPnyc).
 Features:
   - handle()          — on-demand query (responds to Telegram messages)
   - run_event_scan()  — proactive scheduled scan, sends Telegram alert if hot events found
                         (runs 2x/week via APScheduler in bot.py)
 """
 
-import time
 import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from core.llm import chat
@@ -24,16 +24,18 @@ in the search results that is before today's date, IGNORE that event entirely. D
 If you are unsure whether an event is upcoming or past, exclude it. When in doubt, leave it out.
 
 Priority event types (in order):
-1. Healthcare / health-tech / digital health networking
-2. Tech / startup / AI demo nights
-3. Asian / AAPI / Japanese / Hong Kong cultural or professional events
-4. Pop-up events (food, art, retail, experiences — anything flash/one-time)
-5. Food & drink events (tastings, happy hours, open bars, ramen, sake, dim sum)
-6. General free NYC networking and community events
+1. 🍻 Events with FREE FOOD or FREE DRINKS / open bar / complimentary drinks (always #1)
+2. 🏃 New activities, hobbies, or experiences — things Justin hasn't tried (climbing, ceramics,
+   salsa, archery, cooking class, comedy, improv, sports leagues, outdoor activities, etc.)
+3. 🏥 Healthcare / health-tech / digital health networking
+4. 💻 Tech / startup / AI demo nights
+5. 🎌 Asian / AAPI / Japanese / Hong Kong cultural or professional events
+6. 🎉 Pop-up events (food, art, retail, experiences — anything flash/one-time)
+7. 🎊 General free NYC networking and community events
 
 Sources to surface links from when found: Luma (lu.ma), Eventbrite, Meetup, Partiful,
-X/Twitter RSVP posts, Instagram (#RSVPnyc, #NYCevents, #NYCpopup),
-Time Out NYC, Thrillist, Reddit r/nyc, nycfreeevents.com.
+Yelp Events, nycgo.com, allevents.in, do.nyc, X/Twitter RSVP posts,
+Instagram (#RSVPnyc, #NYCevents, #NYCpopup), Time Out NYC, Thrillist, Reddit r/nyc.
 
 When Instagram content appears in results, label it as 📸 Instagram and include the hashtag or
 account handle if visible. Instagram posts often surface pop-up events and food/drink events
@@ -51,17 +53,31 @@ Format each event as:
 Rules:
 - Only include events that are UPCOMING (on or after today)
 - Prioritize events with a direct RSVP link
+- 🍻 FREE FOOD or OPEN BAR events get a 🍻 emoji and always appear first
+- 🆕 New activity/hobby events get a 🆕 emoji
 - If a pop-up or flash event is found, always include it regardless of category
 - If X/Twitter posts with event links are in the results, surface them
 - At the end: bold the single top pick and say why in one line"""
 
 # Keywords that warrant an immediate proactive alert (don't wait for weekly roundup)
 HOT_KEYWORDS = [
+    # Free food/drinks (highest priority)
     "free food", "free drinks", "open bar", "complimentary drinks", "happy hour",
     "food and drink", "drinks included", "networking reception", "cocktail reception",
+    "free beer", "free wine", "free snacks", "catered", "refreshments",
+    # Food events
     "sake", "ramen", "izakaya", "dim sum", "japanese", "hong kong", "cantonese",
-    "aapi", "asian american", "food festival", "tasting", "wine tasting",
+    "food festival", "tasting", "wine tasting", "beer tasting", "sake tasting",
+    # Asian / AAPI
+    "aapi", "asian american",
+    # Pop-ups
     "pop-up", "popup", "pop up", "flash event", "drop-in",
+    # New activities / hobbies
+    "climbing", "ceramics", "pottery", "salsa", "dance class", "cooking class",
+    "archery", "yoga class", "improv", "comedy", "sports league", "tennis",
+    "volleyball", "pickleball", "kayaking", "hiking club", "book club",
+    "photography walk", "sketching", "art class", "meditation", "breathwork",
+    # Tech / health
     "tech networking", "healthcare networking", "startup", "demo night",
 ]
 
@@ -69,7 +85,7 @@ HOT_KEYWORDS = [
 def _get_date_range() -> tuple[str, str, str, datetime.date]:
     """Returns (today_str, end_str, today_iso, today_date) for filtering and display."""
     today = datetime.date.today()
-    end = today + datetime.timedelta(days=10)
+    end = today + datetime.timedelta(days=14)
     return today.strftime("%B %d"), end.strftime("%B %d, %Y"), today.isoformat(), today
 
 
@@ -77,56 +93,69 @@ def _get_date_range() -> tuple[str, str, str, datetime.date]:
 
 def _build_queries(focus: str = "") -> list[str]:
     """Build diverse search queries across all sources targeting Justin's interest areas."""
-    start, end, today_iso, today = _get_date_range()
+    start, end, _, _ = _get_date_range()
 
     base_queries = [
-        # ── X / Twitter RSVP NYC (actual X posts with links) ──────────────────
-        f'site:x.com "RSVP NYC" {start} 2026 link free event',
-        f'site:twitter.com "RSVP NYC" free event link {start} 2026',
-        f'site:x.com NYC free event "link in bio" OR "RSVP" {start} 2026',
-        f'"RSVP NYC" OR "NYC free event" site:x.com 2026',
+        # ── X / Twitter: "RSVP NYC" and "sign up NYC" ────────────────────────
+        f'"RSVP NYC" free event {start} 2026 lu.ma OR eventbrite OR partiful',
+        f'"sign up NYC" free event {start} 2026 lu.ma OR eventbrite OR partiful',
+        f'site:x.com "RSVP NYC" free event {start} 2026',
+        f'site:x.com "sign up NYC" free event {start} 2026',
+        f'site:twitter.com "RSVP NYC" OR "sign up NYC" free event {start} 2026',
+
+        # ── Free food / drinks (highest priority) ────────────────────────────
+        f'NYC "free food" OR "open bar" OR "free drinks" event {start} 2026',
+        f'NYC "complimentary drinks" OR "catered" networking event {start} 2026',
+        f'site:eventbrite.com NYC "free food" OR "open bar" event {start} 2026',
+        f'site:lu.ma NYC "open bar" OR "free drinks" OR "free food" {start} 2026',
+
+        # ── New activities & hobbies ──────────────────────────────────────────
+        f'NYC free "try for the first time" activity class event {start} 2026',
+        f'NYC free intro class workshop climbing ceramics cooking {start} 2026',
+        f'NYC free sports league social club meetup {start} 2026',
+        f'NYC free dance salsa yoga climbing pottery class beginner {start} 2026',
+        f'site:eventbrite.com NYC free class workshop activity beginner {start} 2026',
+        f'site:lu.ma NYC class workshop hobby activity free {start} 2026',
 
         # ── Luma ──────────────────────────────────────────────────────────────
         f'site:lu.ma NYC free events {start} 2026',
         f'site:lu.ma NYC healthcare tech AAPI Japanese free {start} 2026',
-        f'lu.ma/nyc pop-up free networking {start} 2026',
 
         # ── Eventbrite ────────────────────────────────────────────────────────
         f'site:eventbrite.com NYC free events {start} 2026 healthcare tech Asian',
         f'site:eventbrite.com NYC free networking {start} 2026',
-        f'site:eventbrite.com NYC pop-up free {start} 2026',
 
-        # ── Partiful (pop-up party app) ───────────────────────────────────────
+        # ── Partiful ──────────────────────────────────────────────────────────
         f'site:partiful.com NYC free event {start} 2026',
-        f'partiful NYC pop-up party free {start} 2026',
+        f'partiful NYC free party event {start} 2026',
+
+        # ── Yelp Events ───────────────────────────────────────────────────────
+        f'site:yelp.com/events NYC free event {start} 2026',
+        f'yelp events NYC free "this week" {start} 2026',
+
+        # ── NYC-specific event sites ──────────────────────────────────────────
+        f'site:nycgo.com free events {start} 2026',
+        f'site:allevents.in NYC free events {start} 2026',
+        f'site:do.nyc free events {start} 2026',
+        f'site:timeout.com NYC free events this week 2026',
+        f'nycfreeevents.com {start} 2026',
 
         # ── Healthcare & tech ─────────────────────────────────────────────────
-        f'NYC free healthcare leadership networking events {start} 2026',
         f'NYC free health tech digital health networking events {start} 2026',
-        f'NYC free startup tech demo networking event {start} 2026',
-        f'NYC free AI tech founder networking event {start} 2026',
+        f'NYC free startup tech AI demo networking event {start} 2026',
 
         # ── Asian / AAPI / Japanese / Hong Kong ───────────────────────────────
         f'NYC free Japanese cultural events {start} 2026',
         f'NYC free AAPI Asian American professional networking {start} 2026',
-        f'NYC free Hong Kong Cantonese community events {start} 2026',
         f'NYC Japan Society free events {start} 2026',
-        f'NYC Asian Pacific American free events networking {start} 2026',
 
         # ── Pop-up events ─────────────────────────────────────────────────────
         f'NYC pop-up free event this week {start} 2026 food drinks art',
-        f'NYC free pop-up market shop food drink {start} 2026',
-        f'NYC flash event drop-in free {start} 2026',
-        f'site:timeout.com NYC free events this week 2026',
-        f'site:thrillist.com NYC free events {start} 2026',
-        f'nycfreeevents.com {start} 2026',
+        f'NYC free pop-up flash drop-in event {start} 2026',
 
         # ── General free NYC ──────────────────────────────────────────────────
-        f'free NYC events this week {start} {end} food drinks networking 2026',
+        f'NYC free events this week {start} {end} food drinks 2026',
         f'NYC free events {start} 2026 site:reddit.com r/nyc OR r/nycevents',
-
-        # ── Investor / finance ────────────────────────────────────────────────
-        f'NYC free investor real estate finance networking {start} 2026',
     ]
 
     if focus:
@@ -151,7 +180,7 @@ SOURCE_LABELS = {
 }
 
 
-def _extract_event_urls(content: str, listing_url: str) -> list[str]:
+def _extract_event_urls(content: str) -> list[str]:
     """
     Parse individual event page URLs from a listing/category page's content.
     Returns specific event URLs — not the listing page itself.
@@ -198,7 +227,7 @@ def _listing_page_to_events(content: str, listing_url: str, source_label: str) -
     by extracting specific event URLs from the page content.
     Falls back to returning the listing page itself if no event URLs found.
     """
-    event_urls = _extract_event_urls(content, listing_url)
+    event_urls = _extract_event_urls(content)
 
     if not event_urls:
         # No individual links found — return the listing page as-is
@@ -223,19 +252,26 @@ def _is_hot_event(text: str) -> bool:
 
 def _filter_stale(results: list[dict]) -> list[dict]:
     """
-    Drop results that clearly reference past years/months.
-    We check for year mentions older than current year and month strings before today.
+    Drop results that clearly reference past events.
+    Checks: past years, past months this year, and specific past dates in current month.
     This is a fast pre-filter before the LLM sees the data.
     """
-    import re
     today = datetime.date.today()
     current_year = today.year
     past_years = [str(y) for y in range(2020, current_year)]
 
-    # Month names that have fully passed this year
     month_names = ["january","february","march","april","may","june",
                    "july","august","september","october","november","december"]
-    past_months_this_year = [month_names[i] for i in range(today.month - 1)]  # months before current
+    # Months that have fully passed this year
+    past_months_this_year = [month_names[i] for i in range(today.month - 1)]
+    current_month_name = month_names[today.month - 1]
+
+    # Past dates in the current month (e.g. "march 1" through "march 22" when today is march 23)
+    past_day_patterns = []
+    for day in range(1, today.day):
+        past_day_patterns.append(f"{current_month_name} {day}")
+        past_day_patterns.append(f"{current_month_name} {day},")
+        past_day_patterns.append(f"{current_month_name} {day:02d}")
 
     kept = []
     for r in results:
@@ -245,10 +281,18 @@ def _filter_stale(results: list[dict]) -> list[dict]:
         if any(py in text for py in past_years):
             continue
 
-        # Drop if it references a past month + this year (e.g. "january 2026" when it's March)
+        # Drop if it references a past month + this year
         stale = False
         for pm in past_months_this_year:
             if pm in text and str(current_year) in text:
+                stale = True
+                break
+        if stale:
+            continue
+
+        # Drop if it references a specific past date in the current month
+        for pat in past_day_patterns:
+            if pat in text:
                 stale = True
                 break
         if stale:
@@ -265,7 +309,7 @@ def _fetch_luma() -> list[dict]:
     Directly crawl Luma NYC event listing pages.
     This gets actual upcoming events, not just indexed search snippets.
     """
-    start, end, today_iso, today = _get_date_range()
+    start, _, _, _ = _get_date_range()
     results = []
 
     # Direct Luma NYC discover pages
@@ -283,7 +327,7 @@ def _fetch_luma() -> list[dict]:
     # Also run targeted Tavily searches to surface specific Luma event pages
     luma_queries = [
         f'site:lu.ma NYC free events {start} 2026',
-        f'site:lu.ma NYC healthcare tech startup networking {start} OR {end} 2026',
+        f'site:lu.ma NYC healthcare tech startup networking {start} 2026',
         f'site:lu.ma NYC AAPI Japanese Asian free {start} 2026',
         f'site:lu.ma NYC pop-up food drink free {start} 2026',
     ]
@@ -298,7 +342,7 @@ def _fetch_eventbrite() -> list[dict]:
     """
     Directly crawl Eventbrite NYC free event pages + targeted searches.
     """
-    start, end, today_iso, today = _get_date_range()
+    start, _, _, _ = _get_date_range()
     results = []
 
     # Direct Eventbrite NYC listing pages
@@ -331,7 +375,7 @@ def _fetch_meetup() -> list[dict]:
     """
     Fetch Meetup.com NYC events for healthcare, tech, and AAPI groups.
     """
-    start, _, today_iso, today = _get_date_range()
+    start, _, _, _ = _get_date_range()
     results = []
 
     meetup_urls = [
@@ -357,39 +401,44 @@ def _fetch_meetup() -> list[dict]:
 
 def _fetch_x_rsvp() -> list[dict]:
     """
-    Scan X/Twitter for RSVP NYC posts.
+    Scan X/Twitter for RSVP NYC and sign up NYC posts.
     X blocks most crawlers, so we try Nitter (X proxy) instances first,
-    then fall back to Tavily searches that may surface indexed tweets.
+    then fall back to Tavily searches that may surface indexed tweet content.
     """
+    start, _, _, _ = _get_date_range()
     results = []
 
-    # Try Nitter instances — X-compatible frontend that allows search
-    nitter_instances = [
-        "https://nitter.privacydev.net/search?q=RSVP+NYC+free&f=tweets",
-        "https://nitter.poast.org/search?q=RSVP+NYC+free&f=tweets",
-        "https://nitter.1d4.us/search?q=RSVP+NYC+free&f=tweets",
-        "https://nitter.net/search?q=RSVP+NYC+free&f=tweets",
+    # Nitter search queries — both "RSVP NYC" and "sign up NYC"
+    nitter_queries = [
+        "RSVP+NYC+free",
+        "sign+up+NYC+free+event",
+        "RSVP+NYC+lu.ma",
+        "NYC+free+event+link",
     ]
-    for url in nitter_instances:
-        content = fetch_page(url, max_chars=4000)
-        if content and len(content) > 300 and "tweet" in content.lower():
-            results.append({"title": "X/Twitter: RSVP NYC", "url": url, "content": content})
-            break  # One working Nitter instance is enough
-
-    # Also try fetching @rsvpnyc style aggregator accounts on Nitter
-    aggregator_urls = [
-        "https://nitter.privacydev.net/search?q=%22RSVP+NYC%22+lu.ma&f=tweets",
-        "https://nitter.privacydev.net/search?q=%22NYC+free+event%22+lu.ma+OR+eventbrite&f=tweets",
+    nitter_bases = [
+        "https://nitter.privacydev.net",
+        "https://nitter.poast.org",
+        "https://nitter.1d4.us",
+        "https://nitter.net",
     ]
-    for url in aggregator_urls:
-        content = fetch_page(url, max_chars=3000)
-        if content and len(content) > 300:
-            results.append({"title": "X/Twitter: NYC Free Events", "url": url, "content": content})
+    found_working_nitter = False
+    for base in nitter_bases:
+        for q in nitter_queries[:2]:  # Try first 2 queries on first working instance
+            url = f"{base}/search?q={q}&f=tweets"
+            content = fetch_page(url, max_chars=4000)
+            if content and len(content) > 300 and ("tweet" in content.lower() or "nitter" in content.lower()):
+                results.append({"title": f"𝕏: {q.replace('+', ' ')}", "url": url, "content": content})
+                found_working_nitter = True
+        if found_working_nitter:
+            break
 
-    # Fallback: Tavily queries that may surface indexed tweet content
+    # Tavily searches for indexed X/tweet content
     x_queries = [
-        '"RSVP NYC" free event lu.ma OR eventbrite OR partiful 2026',
-        '"NYC free event" RSVP link 2026 healthcare OR tech OR popup OR food',
+        f'"RSVP NYC" free event {start} 2026 lu.ma OR eventbrite OR partiful',
+        f'"sign up NYC" free event {start} 2026',
+        f'"RSVP NYC" OR "sign up NYC" free food drinks event {start} 2026',
+        f'"NYC free event" RSVP link 2026 healthcare OR tech OR food OR popup',
+        f'x.com "RSVP NYC" event free {start} 2026',
     ]
     for q in x_queries:
         for r in search(q, max_results=4):
@@ -407,7 +456,7 @@ def _fetch_instagram() -> list[dict]:
     3. Broad searches that surface pages embedding Instagram event posts
     All results are forward-date filtered before reaching the LLM.
     """
-    start, end, today_iso, today = _get_date_range()
+    start, _, _, _ = _get_date_range()
     results = []
 
     # ── Layer 1: Public Instagram viewer proxies ──────────────────────────────
@@ -456,25 +505,32 @@ def _fetch_instagram() -> list[dict]:
 
 def _fetch_other_sources() -> list[dict]:
     """
-    Fetch from Partiful, Time Out NYC, Reddit, Thrillist, and other sources.
+    Fetch from Partiful, Time Out NYC, Reddit, Thrillist, Yelp Events,
+    nycgo.com, allevents.in, do.nyc, and other sources.
     """
-    start, end, today_iso, today = _get_date_range()
+    start, _, _, _ = _get_date_range()
     results = []
 
-    # Direct page fetches
+    # Direct page fetches — curated listing pages
     other_urls = [
         "https://www.timeout.com/newyork/things-to-do/free-things-to-do-in-nyc-this-weekend",
         "https://www.timeout.com/newyork/things-to-do/best-free-events-in-new-york",
+        "https://www.nycgo.com/articles/free-things-to-do-in-nyc",
+        "https://allevents.in/new%20york/free",
         "https://www.nycfreeevents.com",
+        "https://www.yelp.com/events/nyc-new-york",
     ]
     for url in other_urls:
         content = fetch_page(url, max_chars=6000)
         if content and len(content) > 200:
             results.extend(_listing_page_to_events(content, url, "NYC Events"))
 
-    # Partiful + Reddit + Thrillist via search
+    # Partiful + Reddit + Thrillist + new sites via search
     other_queries = [
         f'site:partiful.com NYC free event {start} 2026',
+        f'site:yelp.com/events NYC free {start} 2026',
+        f'site:allevents.in NYC free events {start} 2026',
+        f'site:nycgo.com free events {start} 2026',
         f'site:reddit.com r/nyc OR r/nycevents free event RSVP {start} 2026',
         f'site:thrillist.com NYC free events {start} 2026',
         f'NYC Japan Society free events {start} 2026',
@@ -482,6 +538,34 @@ def _fetch_other_sources() -> list[dict]:
         f'NYC free investor real estate finance networking {start} 2026',
     ]
     for q in other_queries:
+        for r in search(q, max_results=3):
+            results.append(r)
+
+    return results
+
+
+def _fetch_new_activities() -> list[dict]:
+    """
+    Search for free intro classes, hobby workshops, and new activity events in NYC.
+    Targets things Justin likely hasn't tried: ceramics, climbing, salsa, cooking, etc.
+    """
+    start, _, _, _ = _get_date_range()
+    results = []
+
+    activity_queries = [
+        f'NYC free intro class beginner workshop "first time" {start} 2026',
+        f'NYC free cooking class workshop event {start} 2026',
+        f'NYC free pottery ceramics class event {start} 2026',
+        f'NYC free rock climbing intro session {start} 2026',
+        f'NYC free salsa dance class beginner {start} 2026',
+        f'NYC free comedy improv open mic {start} 2026',
+        f'NYC free sports social league volleyball pickleball {start} 2026',
+        f'NYC free outdoor activity hiking kayaking {start} 2026',
+        f'site:eventbrite.com NYC free beginner class workshop {start} 2026',
+        f'site:lu.ma NYC class workshop activity {start} 2026',
+        f'site:meetup.com NYC hobby club beginner free {start} 2026',
+    ]
+    for q in activity_queries:
         for r in search(q, max_results=3):
             results.append(r)
 
@@ -499,6 +583,7 @@ def _gather_all_events(focus: str = "") -> list[dict]:
         "meetup": _fetch_meetup,
         "x_rsvp": _fetch_x_rsvp,
         "instagram": _fetch_instagram,
+        "new_activities": _fetch_new_activities,
         "other": _fetch_other_sources,
     }
 
@@ -518,7 +603,7 @@ def _gather_all_events(focus: str = "") -> list[dict]:
 
     # Add focus-specific queries on top if user has a specific interest
     if focus:
-        start, end, today_iso, today = _get_date_range()
+        start, _, _, _ = _get_date_range()
         for q in [
             f'NYC free events {focus} {start} 2026',
             f'site:lu.ma NYC {focus} free {start} 2026',
@@ -528,21 +613,6 @@ def _gather_all_events(focus: str = "") -> list[dict]:
                 if r["url"] not in seen_urls:
                     seen_urls.add(r["url"])
                     all_results.append(r)
-
-    return _filter_stale(all_results)
-
-
-def _search_events(queries: list[str], max_per_query: int = 5) -> list[dict]:
-    """Legacy: run searches and return deduplicated, stale-filtered results."""
-    all_results = []
-    seen_urls = set()
-
-    for q in queries:
-        for r in search(q, max_results=max_per_query):
-            if r["url"] not in seen_urls:
-                seen_urls.add(r["url"])
-                all_results.append(r)
-        time.sleep(0.2)
 
     return _filter_stale(all_results)
 
@@ -610,24 +680,30 @@ def handle(message: str = "") -> str:
     prompt = (
         f"TODAY IS {today_iso}. You are finding UPCOMING NYC events.\n\n"
         f"STRICT RULE: Only include events occurring on or after {today_iso}. "
-        f"Any event that occurred before today is IRRELEVANT — exclude it completely. "
-        f"Do not mention events from January, February, or any past month of {today.year}, "
-        f"and do not mention any events from prior years. "
-        f"If you are not sure an event is in the future, exclude it.\n\n"
+        f"Any event before today is IRRELEVANT — exclude it completely. "
+        f"Do not mention events from any past date or past month of {today.year}, "
+        f"or from any prior year. If you cannot confirm an event is in the future, exclude it.\n\n"
         f"Date window to surface: {start}–{end}\n\n"
         f"{cal_context}\n\n"
         f"Search results:\n{context_block}\n\n"
-        f"Priority order: (1) healthcare/health-tech, (2) tech/startup/AI, "
-        f"(3) Asian/AAPI/Japanese/HK cultural or professional, (4) pop-ups and flash events, "
-        f"(5) food & drink, (6) general free NYC.\n"
-        f"If any X/Twitter posts with event RSVP links appear in results, label source as 𝕏. "
-        f"If Instagram posts appear (#RSVPnyc, #NYCevents, #NYCpopup), label source as 📸 Instagram. "
-        f"Include Partiful, Meetup, and Meetup group links if found.\n"
-        f"If recurring clubs or communities appear that are worth joining long-term, call them out.\n"
-        f"LINK RULE: Each event's 🔗 link MUST be the direct event registration/RSVP page "
-        f"(e.g. eventbrite.com/e/..., lu.ma/abc123, meetup.com/group/events/123, partiful.com/e/...). "
-        f"NEVER use a category or listing page (e.g. eventbrite.com/d/..., lu.ma/nyc, meetup.com/find) "
-        f"as the event link. If you only have a listing page URL and no specific event URL, omit the link.\n"
+        f"PRIORITY ORDER (strictly follow this ranking):\n"
+        f"1. 🍻 Events with FREE FOOD, FREE DRINKS, open bar, or complimentary refreshments — always first\n"
+        f"2. 🆕 New activities or hobbies Justin likely hasn't tried "
+        f"(climbing, ceramics, salsa, cooking class, improv, sports league, kayaking, etc.)\n"
+        f"3. 🏥 Healthcare / health-tech / digital health networking\n"
+        f"4. 💻 Tech / startup / AI demo nights\n"
+        f"5. 🎌 Asian / AAPI / Japanese / Hong Kong cultural or professional\n"
+        f"6. 🎉 Pop-ups and flash events (always include any found)\n"
+        f"7. 🎊 General free NYC networking\n\n"
+        f"Mark 🍻 on any event with free food/drinks. Mark 🆕 on new activity/hobby events.\n"
+        f"If any X/Twitter posts with event RSVP links appear (from 'RSVP NYC' or 'sign up NYC' searches), "
+        f"label source as 𝕏 and prioritize them.\n"
+        f"If Instagram posts appear (#RSVPnyc, #NYCevents, #NYCpopup), label source as 📸 Instagram.\n"
+        f"Include Yelp Events, nycgo.com, allevents.in, Partiful, and Meetup links if found.\n"
+        f"If recurring clubs or communities worth joining long-term appear, call them out separately.\n"
+        f"LINK RULE: Each event's 🔗 link MUST be the direct event RSVP page "
+        f"(eventbrite.com/e/..., lu.ma/abc123, meetup.com/group/events/123, partiful.com/e/...). "
+        f"NEVER use a category/listing page as the link. Omit the link if no specific event URL found.\n"
         f"If fewer than 3 future events are found, say so honestly — do not invent events.\n"
         f"User query: {message}"
     )
@@ -678,10 +754,14 @@ def run_event_scan(send_all: bool = False) -> str:
         f"Date window to surface: {start}–{end}\n\n"
         f"{cal_context}\n\n"
         f"Search results:\n{context_block}\n\n"
-        f"Priority order: (1) healthcare/health-tech, (2) tech/startup/AI, "
-        f"(3) Asian/AAPI/Japanese/HK cultural or professional, (4) pop-ups and flash events "
-        f"[ALWAYS include any pop-ups found], (5) food & drinks with free food/open bar, "
-        f"(6) general free NYC events.\n"
+        f"Priority order:\n"
+        f"1. 🍻 FREE FOOD / FREE DRINKS / open bar — always rank these #1\n"
+        f"2. 🆕 New activities/hobbies (climbing, ceramics, salsa, cooking class, improv, etc.)\n"
+        f"3. 🏥 Healthcare / health-tech\n"
+        f"4. 💻 Tech / startup / AI\n"
+        f"5. 🎌 Asian/AAPI/Japanese/HK cultural or professional\n"
+        f"6. 🎉 Pop-ups and flash events [ALWAYS include any pop-ups found]\n"
+        f"7. 🎊 General free NYC events\n\n"
         f"If X/Twitter posts with RSVP links appear, include them labelled as 𝕏. "
         f"Include Partiful links if found. "
         f"If recurring clubs or communities worth joining long-term appear, add a separate "
