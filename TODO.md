@@ -2,11 +2,37 @@
 
 > **Goal:** Turn the web dashboard from a static status board into a fully interactive command center — click into any agent and see live data, trends, and one-tap actions.
 
-**Branch:** `dashboard` | **PR:** #3
+**Branch:** `main` | **PRs:** #3 (merged), #17 (merged)
 
 ---
 
-## Today's Sprint
+## Completed ✅
+
+- [x] FastAPI web server (`integrations/web/server.py`) with `/api/summary` + 8 detail endpoints
+- [x] Dark mobile-first dashboard (`integrations/web/static/index.html`) with agent cards
+- [x] Auto-refresh every 30s with progress bar countdown
+- [x] Slide-in detail panel with shimmer loading states
+- [x] Health detail: weight sparkline, sleep bar chart, workout dot grid, macro progress bars
+- [x] Finance detail: budget by category, bonus offers list, side hustle ideas
+- [x] Market detail: live yfinance watchlist with 52-week range bars, session badge
+- [x] Calendar detail: day-grouped agenda, conflict detection, Google Calendar links
+- [x] Email detail: dual-account inbox, urgency triage (🔴/🟡/⚪), expand-to-preview
+- [x] Travel detail: deal browser with booking links, escape.flights cash deals section
+- [x] Follow-up detail: overdue + upcoming list
+- [x] Bonus detail: last scan results + elevated offer cards + action button
+- [x] Social detail: cached NYC events + scan action button
+- [x] Mortgage detail: Paperstac listings with STRONG/GOOD ratings + scan button
+- [x] Investment agent: 12th card + full watchlist panel with 52w range
+- [x] Action buttons: bonus_scan, social_scan, mortgage_scan, briefing (POST /api/action/*)
+- [x] SVG sparklines: weight trend, sleep bar chart (zero-dependency)
+- [x] PWA manifest (`integrations/web/static/manifest.json`)
+- [x] Status helpers enriched for all 12 agents in `/api/summary`
+
+---
+
+---
+
+## Remaining / Next Sprint
 
 ### P1 — Core Data (do these first, they unblock everything)
 
@@ -142,6 +168,19 @@
 - [ ] Add simple `DASHBOARD_TOKEN` env var check to all action endpoints
 - [ ] Action button component in `index.html` with spinner + result toast
 - **Files:** `server.py` + `index.html` + `.env`
+
+---
+
+#### 13. Image OCR / Text Extraction for Better Agent Routing · (new)
+> **Why:** When a user sends an image to the bot, routing currently relies on the vision model classifying the image type (food/event/receipt/etc). But images with embedded text — screenshots of data tables, flight prices, medical charts, lease agreements — can be misclassified because the vision model may not reliably read the text content. Extracting text from the image first and including it in the routing decision would dramatically improve accuracy.
+
+- [ ] In `integrations/telegram/bot.py → _triage_image()`: after base64-encoding the image, also run an OCR pass to extract any embedded text
+- [ ] Use Groq's vision model with a dedicated "extract all text from this image verbatim" prompt — store result as `image_text`
+- [ ] Pass `image_text` alongside the image to the classification prompt so the router can see both visual content AND text content
+- [ ] Update `_AGENT_IMAGE_PROMPTS` — when routing to an agent, include `image_text` in the context so the agent can see the extracted data
+- [ ] Add caption keyword fast-path: if `image_text` mentions "flight", "award", "miles" → travel; if "infusion", "IV", "patient" → infusion; if table headers match known patterns, route to appropriate agent
+- [ ] Test with: Amadeus flight result screenshots, health/lab result images, Paperstac listing screenshots, calendar invite screenshots
+- **File:** `integrations/telegram/bot.py`
 
 ---
 

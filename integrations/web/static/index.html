@@ -4,6 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Executive AI Dashboard</title>
+  <link rel="manifest" href="/static/manifest.json" />
+  <meta name="theme-color" content="#070e1a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <style>
     :root {
       --bg:       #070e1a;
@@ -21,9 +25,7 @@
       --red:      #f87171;
       --purple:   #a78bfa;
     }
-
     * { box-sizing: border-box; margin: 0; padding: 0; }
-
     body {
       background: var(--bg);
       color: var(--text);
@@ -36,31 +38,17 @@
     header {
       background: linear-gradient(180deg, #0a1525 0%, var(--surface) 100%);
       border-bottom: 1px solid var(--border);
-      padding: .9rem 1.25rem;
+      padding: .85rem 1.25rem;
       display: flex;
       align-items: center;
       justify-content: space-between;
       position: sticky;
       top: 0;
       z-index: 100;
-      backdrop-filter: blur(12px);
     }
-    .header-left { display: flex; flex-direction: column; gap: .15rem; }
-    header h1 {
-      font-size: .95rem;
-      font-weight: 700;
-      letter-spacing: .02em;
-      display: flex;
-      align-items: center;
-      gap: .4rem;
-    }
+    header h1 { font-size: .95rem; font-weight: 700; display: flex; align-items: center; gap: .4rem; }
     header h1 .logo { color: var(--accent); }
-    #server-time {
-      font-size: .68rem;
-      color: var(--muted);
-      font-family: "SF Mono", "Menlo", monospace;
-    }
-    .header-right { display: flex; align-items: center; gap: .6rem; }
+    #server-time { font-size: .65rem; color: var(--muted); font-family: monospace; margin-top: .1rem; }
     #refresh-btn {
       background: var(--surface2);
       border: 1px solid var(--border);
@@ -71,51 +59,38 @@
       font-size: .72rem;
       transition: all .15s;
     }
-    #refresh-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--surface3); }
-    #refresh-btn.spinning { color: var(--accent); border-color: var(--accent); animation: spin .6s linear infinite; }
-    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    #refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
+    #refresh-btn.loading { animation: spin .7s linear infinite; color: var(--accent); }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
     /* ── Main ── */
-    main {
-      max-width: 960px;
-      margin: 0 auto;
-      padding: 1.1rem 1rem;
-    }
-
-    /* ── Section label ── */
+    main { max-width: 960px; margin: 0 auto; padding: 1rem; }
     .section-label {
-      font-size: .62rem;
+      font-size: .6rem;
       letter-spacing: .12em;
       color: var(--muted);
-      font-family: "SF Mono", "Menlo", monospace;
+      font-family: monospace;
       text-transform: uppercase;
       margin: 0 0 .6rem;
       display: flex;
       align-items: center;
       gap: .5rem;
     }
-    .section-label::after {
-      content: "";
-      flex: 1;
-      height: 1px;
-      background: var(--border);
-    }
+    .section-label::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 
-    /* ── Agent grid ── */
+    /* ── Cards ── */
     .agent-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
-      gap: .7rem;
+      grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
+      gap: .65rem;
     }
-
-    /* ── Agent card ── */
     .card {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 14px;
-      padding: 1rem 1.1rem;
+      padding: .95rem 1.05rem;
       cursor: pointer;
-      transition: border-color .18s, background .18s, transform .12s, box-shadow .18s;
+      transition: border-color .15s, background .15s, transform .1s, box-shadow .15s;
       position: relative;
       overflow: hidden;
     }
@@ -124,87 +99,47 @@
       position: absolute;
       top: 0; left: 0; right: 0;
       height: 2px;
-      background: transparent;
-      transition: background .18s;
     }
-    .card.status-ok::before    { background: var(--green); }
-    .card.status-warn::before  { background: var(--yellow); }
-    .card.status-gray::before  { background: var(--border2); }
-    .card.status-green::before { background: var(--green); }
-    .card.status-yellow::before { background: var(--yellow); }
-    .card.status-orange::before { background: var(--orange); }
+    .card.s-ok::before    { background: var(--green); }
+    .card.s-warn::before  { background: var(--yellow); }
+    .card.s-gray::before  { background: var(--border2); }
+    .card.s-green::before { background: var(--green); }
+    .card.s-yellow::before { background: var(--yellow); }
+    .card.s-orange::before { background: var(--orange); }
+    .card:hover { border-color: var(--border2); background: var(--surface2); transform: translateY(-1px); box-shadow: 0 4px 20px rgba(0,0,0,.35); }
 
-    .card:hover {
-      border-color: var(--border2);
-      background: var(--surface2);
-      transform: translateY(-1px);
-      box-shadow: 0 4px 20px rgba(0,0,0,.3);
-    }
-    .card-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: .55rem;
-    }
-    .card-title {
-      display: flex;
-      align-items: center;
-      gap: .45rem;
-      font-size: .82rem;
-      font-weight: 600;
-      letter-spacing: .01em;
-    }
-    .card-icon { font-size: 1rem; line-height: 1; }
-    .status-dot {
-      width: 7px; height: 7px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }
-    .status-dot.ok     { background: var(--green); box-shadow: 0 0 6px rgba(74,222,128,.5); }
-    .status-dot.warn   { background: var(--yellow); box-shadow: 0 0 8px rgba(251,191,36,.6); animation: pulse 2s infinite; }
-    .status-dot.gray   { background: var(--muted); }
-    .status-dot.green  { background: var(--green); box-shadow: 0 0 6px rgba(74,222,128,.5); }
-    .status-dot.yellow { background: var(--yellow); box-shadow: 0 0 8px rgba(251,191,36,.6); }
-    .status-dot.orange { background: var(--orange); box-shadow: 0 0 6px rgba(251,146,60,.4); }
-    @keyframes pulse {
-      0%,100% { opacity: 1; }
-      50% { opacity: .4; }
-    }
-    .card-summary {
-      font-size: .77rem;
-      color: var(--muted);
-      line-height: 1.45;
-    }
-    .card-extra {
-      margin-top: .45rem;
-    }
-    .card-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: .25rem;
-      font-size: .68rem;
+    .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: .5rem; }
+    .card-title  { display: flex; align-items: center; gap: .4rem; font-size: .82rem; font-weight: 600; }
+    .card-icon   { font-size: 1rem; line-height: 1; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .dot.ok, .dot.green { background: var(--green); box-shadow: 0 0 6px rgba(74,222,128,.4); }
+    .dot.warn, .dot.yellow { background: var(--yellow); box-shadow: 0 0 8px rgba(251,191,36,.5); animation: pulse 2s infinite; }
+    .dot.orange { background: var(--orange); }
+    .dot.gray   { background: var(--muted); }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+    .card-summary { font-size: .76rem; color: var(--muted); line-height: 1.45; }
+    .card-extra   { margin-top: .42rem; }
+    .badge {
+      display: inline-flex; align-items: center; gap: .25rem;
+      font-size: .67rem;
       background: var(--surface3);
       border: 1px solid var(--border);
       border-radius: 6px;
       padding: .18rem .45rem;
       color: var(--accent);
-      font-family: "SF Mono", "Menlo", monospace;
+      font-family: monospace;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
-
-    /* Deal items on card */
-    .deal-list { margin-top: .4rem; display: flex; flex-direction: column; gap: .2rem; }
-    .deal-item {
-      font-size: .7rem;
-      display: flex;
-      gap: .35rem;
-      align-items: center;
-    }
-    .deal-route { font-weight: 600; color: var(--text); }
-    .deal-price { color: var(--yellow); font-family: "SF Mono", "Menlo", monospace; }
-    .deal-meta  { color: var(--muted); font-size: .64rem; }
+    .deal-list { display: flex; flex-direction: column; gap: .18rem; margin-top: .35rem; }
+    .deal-row  { font-size: .7rem; display: flex; gap: .3rem; align-items: center; }
+    .deal-route { font-weight: 600; }
+    .deal-price { color: var(--yellow); font-family: monospace; }
 
     /* ── Detail panel ── */
-    #detail-overlay {
+    #overlay {
       display: none;
       position: fixed;
       inset: 0;
@@ -212,7 +147,7 @@
       z-index: 200;
       backdrop-filter: blur(3px);
     }
-    #detail-panel {
+    #panel {
       position: fixed;
       right: 0; top: 0; bottom: 0;
       width: min(440px, 100vw);
@@ -221,153 +156,173 @@
       overflow-y: auto;
       z-index: 201;
       transform: translateX(100%);
-      transition: transform .22s cubic-bezier(.4,0,.2,1);
+      transition: transform .2s cubic-bezier(.4,0,.2,1);
     }
-    #detail-panel.open { transform: translateX(0); }
-    #detail-overlay.open { display: block; }
-
-    .panel-header {
-      position: sticky;
-      top: 0;
+    #panel.open { transform: translateX(0); }
+    #overlay.open { display: block; }
+    .ph {
+      position: sticky; top: 0;
       background: var(--surface);
       border-bottom: 1px solid var(--border);
-      padding: 1rem 1.25rem;
+      padding: .9rem 1.1rem;
       display: flex;
       align-items: center;
       justify-content: space-between;
       z-index: 1;
     }
-    #detail-title {
-      font-size: .95rem;
-      font-weight: 700;
-      display: flex;
-      align-items: center;
-      gap: .5rem;
-    }
-    #detail-close {
+    #ptitle { font-size: .95rem; font-weight: 700; display: flex; align-items: center; gap: .45rem; }
+    #pclose {
       background: var(--surface2);
       border: 1px solid var(--border);
       color: var(--muted);
-      width: 30px; height: 30px;
+      width: 29px; height: 29px;
       border-radius: 8px;
       cursor: pointer;
       font-size: .85rem;
       display: flex; align-items: center; justify-content: center;
-      transition: all .15s;
-      flex-shrink: 0;
     }
-    #detail-close:hover { color: var(--text); border-color: var(--border2); background: var(--surface3); }
+    #pclose:hover { color: var(--text); border-color: var(--border2); }
+    #pbody { padding: 1rem 1.1rem 2rem; }
 
-    #detail-body { padding: 1rem 1.25rem 2rem; }
-
-    .detail-row {
+    /* Detail content atoms */
+    .drow {
       display: flex;
       justify-content: space-between;
       align-items: baseline;
-      padding: .5rem 0;
+      padding: .48rem 0;
       border-bottom: 1px solid var(--border);
       font-size: .8rem;
       gap: .5rem;
     }
-    .detail-row:last-child { border-bottom: none; }
-    .detail-key   { color: var(--muted); flex-shrink: 0; }
-    .detail-value { font-weight: 500; text-align: right; word-break: break-word; }
-
-    .detail-section {
-      font-size: .62rem;
+    .drow:last-child { border-bottom: none; }
+    .dk { color: var(--muted); flex-shrink: 0; }
+    .dv { font-weight: 500; text-align: right; word-break: break-word; }
+    .dsec {
+      font-size: .6rem;
       letter-spacing: .1em;
       color: var(--muted);
       text-transform: uppercase;
-      font-family: "SF Mono", "Menlo", monospace;
-      margin: 1.25rem 0 .5rem;
+      font-family: monospace;
+      margin: 1.2rem 0 .45rem;
       padding-bottom: .3rem;
       border-bottom: 1px solid var(--border);
     }
 
-    /* Progress bar */
-    .metric-row { margin: .6rem 0; }
-    .metric-label {
-      font-size: .72rem;
-      color: var(--muted);
-      display: flex;
-      justify-content: space-between;
-      margin-bottom: 5px;
-    }
-    .metric-label strong { color: var(--text); }
-    .progress-wrap { width: 100%; background: var(--surface3); border-radius: 99px; height: 5px; }
-    .progress-fill { height: 5px; border-radius: 99px; background: var(--green); transition: width .5s cubic-bezier(.4,0,.2,1); }
-    .progress-fill.warn { background: var(--yellow); }
-    .progress-fill.low  { background: var(--red); }
+    /* Progress */
+    .prow { margin: .55rem 0; }
+    .plabel { font-size: .72rem; color: var(--muted); display: flex; justify-content: space-between; margin-bottom: 4px; }
+    .plabel strong { color: var(--text); }
+    .pbar { height: 5px; background: var(--surface3); border-radius: 99px; }
+    .pfill { height: 5px; border-radius: 99px; background: var(--green); transition: width .5s; }
+    .pfill.warn { background: var(--yellow); }
+    .pfill.low  { background: var(--red); }
 
     /* Log list */
-    .log-list { display: flex; flex-direction: column; gap: 0; }
     .log-item {
       font-size: .73rem;
-      padding: .38rem 0;
+      padding: .36rem 0;
       border-bottom: 1px solid var(--border);
       display: grid;
-      grid-template-columns: 3rem 4rem 1fr;
-      gap: .5rem;
+      grid-template-columns: 3.2rem 4.5rem 1fr;
+      gap: .45rem;
       align-items: center;
     }
     .log-item:last-child { border-bottom: none; }
-    .log-date   { color: var(--muted); font-family: "SF Mono", "Menlo", monospace; font-size: .65rem; }
-    .log-metric { color: var(--accent); text-transform: capitalize; }
-    .log-value  { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ld { color: var(--muted); font-family: monospace; font-size: .65rem; }
+    .lm { color: var(--accent); text-transform: capitalize; }
+    .lv { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-    /* Event list */
-    .event-item {
-      padding: .6rem 0;
-      border-bottom: 1px solid var(--border);
-    }
-    .event-item:last-child { border-bottom: none; }
-    .event-name { font-size: .8rem; font-weight: 600; margin-bottom: .2rem; }
-    .event-time { font-size: .68rem; color: var(--muted); }
-    .event-loc  { font-size: .67rem; color: var(--accent); margin-top: .1rem; }
+    /* Events */
+    .ev-item { padding: .55rem 0; border-bottom: 1px solid var(--border); }
+    .ev-item:last-child { border-bottom: none; }
+    .ev-name { font-size: .8rem; font-weight: 600; margin-bottom: .18rem; }
+    .ev-time { font-size: .68rem; color: var(--muted); }
+    .ev-loc  { font-size: .67rem; color: var(--accent); margin-top: .1rem; }
+    .ev-link { font-size: .67rem; }
+    .ev-link a { color: var(--muted); text-decoration: none; }
+    .ev-link a:hover { color: var(--accent); }
+    .conflict { background: rgba(251,191,36,.08); border-left: 2px solid var(--yellow); padding-left: .4rem; border-radius: 0 6px 6px 0; }
 
-    /* Email item */
-    .email-item {
-      padding: .55rem 0;
-      border-bottom: 1px solid var(--border);
-    }
-    .email-item:last-child { border-bottom: none; }
-    .email-subject { font-size: .78rem; font-weight: 500; margin-bottom: .15rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .email-from    { font-size: .67rem; color: var(--muted); }
+    /* Email */
+    .em-item { padding: .5rem 0; border-bottom: 1px solid var(--border); display: flex; gap: .5rem; align-items: flex-start; }
+    .em-item:last-child { border-bottom: none; }
+    .em-urg  { font-size: .75rem; flex-shrink: 0; margin-top: .05rem; }
+    .em-body { overflow: hidden; }
+    .em-subj { font-size: .78rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .em-from { font-size: .66rem; color: var(--muted); }
+    .em-snip { font-size: .66rem; color: var(--muted); margin-top: .1rem; display: none; }
+    .em-item.expanded .em-snip { display: block; white-space: normal; }
 
-    /* Deal block in panel */
-    .deal-block {
-      padding: .65rem 0;
-      border-bottom: 1px solid var(--border);
-    }
+    /* Deal block */
+    .deal-block { padding: .6rem 0; border-bottom: 1px solid var(--border); }
     .deal-block:last-child { border-bottom: none; }
-    .deal-header { font-size: .8rem; font-weight: 600; display: flex; align-items: center; gap: .4rem; margin-bottom: .2rem; }
-    .deal-meta-line { font-size: .68rem; color: var(--muted); }
+    .deal-hdr  { font-size: .8rem; font-weight: 600; display: flex; align-items: center; gap: .35rem; margin-bottom: .18rem; flex-wrap: wrap; }
+    .deal-meta { font-size: .67rem; color: var(--muted); }
 
-    /* ── Auto-refresh bar ── */
-    #refresh-bar {
-      position: fixed;
-      bottom: 0; left: 0; right: 0;
-      height: 2px;
-      background: var(--border);
-      z-index: 99;
+    /* Stock grid */
+    .stock-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: .5rem; margin-top: .5rem; }
+    .stock-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: .55rem .65rem;
     }
-    #refresh-progress {
-      height: 100%;
-      background: var(--accent);
-      transition: width 1s linear;
+    .stock-ticker { font-size: .78rem; font-weight: 700; font-family: monospace; }
+    .stock-price  { font-size: .9rem; font-weight: 600; margin: .1rem 0; }
+    .stock-change { font-size: .72rem; font-weight: 600; }
+    .stock-change.up   { color: var(--green); }
+    .stock-change.down { color: var(--red); }
+    .stock-range  { margin-top: .3rem; }
+    .range-bar    { height: 3px; background: var(--border2); border-radius: 99px; position: relative; }
+    .range-dot    { position: absolute; top: -1.5px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); transform: translateX(-50%); }
+    .range-labels { display: flex; justify-content: space-between; font-size: .58rem; color: var(--muted); margin-top: 2px; }
+
+    /* Offer / listing cards */
+    .offer-item { padding: .55rem 0; border-bottom: 1px solid var(--border); }
+    .offer-item:last-child { border-bottom: none; }
+    .offer-name { font-size: .78rem; font-weight: 600; }
+    .offer-meta { font-size: .67rem; color: var(--muted); margin-top: .12rem; }
+
+    /* Action buttons */
+    .action-btn {
+      display: flex; align-items: center; justify-content: center; gap: .4rem;
       width: 100%;
+      margin-top: 1.25rem;
+      padding: .6rem;
+      background: var(--surface3);
+      border: 1px solid var(--border2);
+      border-radius: 10px;
+      color: var(--accent);
+      font-size: .78rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all .15s;
     }
-    #refresh-indicator {
-      position: fixed;
-      bottom: .5rem;
-      right: .9rem;
-      font-size: .62rem;
-      color: var(--muted);
-      font-family: "SF Mono", "Menlo", monospace;
-      z-index: 99;
+    .action-btn:hover:not(:disabled) { background: var(--surface2); border-color: var(--accent); }
+    .action-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .action-btn.running { animation: pulse 1s infinite; }
+    .action-result {
+      margin-top: .6rem;
+      font-size: .72rem;
+      padding: .45rem .65rem;
+      border-radius: 8px;
+      display: none;
     }
+    .action-result.ok   { background: rgba(74,222,128,.1); color: var(--green); display: block; }
+    .action-result.err  { background: rgba(248,113,113,.1); color: var(--red); display: block; }
 
-    /* Loading shimmer */
+    /* Workout dots */
+    .workout-grid { display: flex; gap: .35rem; margin-top: .35rem; }
+    .wd { width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: .65rem; }
+    .wd.done  { background: rgba(74,222,128,.15); border-color: var(--green); color: var(--green); }
+    .wd.miss  { background: var(--surface3); color: var(--muted); }
+
+    /* Bottom refresh bar */
+    #rbar { position: fixed; bottom: 0; left: 0; right: 0; height: 2px; background: var(--border); z-index: 99; }
+    #rprog { height: 100%; background: var(--accent); transition: width 1s linear; }
+    #rind  { position: fixed; bottom: .45rem; right: .9rem; font-size: .6rem; color: var(--muted); font-family: monospace; z-index: 99; }
+
+    /* Shimmer */
     .shimmer {
       background: linear-gradient(90deg, var(--surface) 25%, var(--surface2) 50%, var(--surface) 75%);
       background-size: 200% 100%;
@@ -377,30 +332,30 @@
       margin: .4rem 0;
     }
     @keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+    .empty-msg { font-size: .78rem; color: var(--muted); text-align: center; padding: 2rem 0; }
 
-    /* Error state */
-    .error-msg { font-size: .78rem; color: var(--muted); text-align: center; padding: 2rem 0; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
 
     @media (max-width: 540px) {
       .agent-grid { grid-template-columns: 1fr 1fr; gap: .5rem; }
-      .card { padding: .8rem .9rem; }
+      .card { padding: .8rem .85rem; }
+      .stock-grid { grid-template-columns: 1fr; }
     }
     @media (max-width: 360px) {
       .agent-grid { grid-template-columns: 1fr; }
-      #detail-panel { width: 100vw; }
+      #panel { width: 100vw; }
     }
   </style>
 </head>
 <body>
 
 <header>
-  <div class="header-left">
+  <div>
     <h1><span class="logo">⚡</span> Executive AI</h1>
-    <div id="server-time">Connecting...</div>
+    <div id="server-time">Connecting…</div>
   </div>
-  <div class="header-right">
-    <button id="refresh-btn" onclick="loadAll()">↻</button>
-  </div>
+  <button id="refresh-btn" onclick="loadAll()">↻</button>
 </header>
 
 <main>
@@ -415,59 +370,52 @@
   </div>
 </main>
 
-<!-- Detail panel -->
-<div id="detail-overlay" onclick="closeDetail()"></div>
-<div id="detail-panel">
-  <div class="panel-header">
-    <div id="detail-title"></div>
-    <button id="detail-close" onclick="closeDetail()">✕</button>
+<div id="overlay" onclick="closePanel()"></div>
+<div id="panel">
+  <div class="ph">
+    <div id="ptitle"></div>
+    <button id="pclose" onclick="closePanel()">✕</button>
   </div>
-  <div id="detail-body"></div>
+  <div id="pbody"></div>
 </div>
 
-<!-- Auto-refresh bar -->
-<div id="refresh-bar"><div id="refresh-progress"></div></div>
-<div id="refresh-indicator">↻ <span id="countdown">30</span>s</div>
+<div id="rbar"><div id="rprog"></div></div>
+<div id="rind">↻ <span id="rcount">30</span>s</div>
 
 <script>
-const AGENTS_ORDER = [
+const ORDER = [
   "health","finance","market","calendar","email",
-  "travel","followup","bonus","social","mortgage","infusion"
+  "travel","followup","bonus","social","mortgage","infusion","investment"
 ];
-const REFRESH_SECS = 30;
+const REFRESH = 30;
+let summary = null;
+let countdown = REFRESH;
+let timer = null;
 
-let summaryData = null;
-let countdown = REFRESH_SECS;
-let countdownTimer = null;
-
-// ── Fetch helpers ─────────────────────────────────────────────────────────────
-async function apiFetch(path) {
+// ── Fetch ─────────────────────────────────────────────────────────────────────
+async function api(path) {
   const r = await fetch(path);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
 
-// ── Load all ──────────────────────────────────────────────────────────────────
 async function loadAll() {
   const btn = document.getElementById("refresh-btn");
-  btn.classList.add("spinning");
+  btn.classList.add("loading");
   try {
-    summaryData = await apiFetch("/api/summary");
-    document.getElementById("server-time").textContent = summaryData.server_time || "";
-    renderGrid(summaryData.agents);
+    summary = await api("/api/summary");
+    document.getElementById("server-time").textContent = summary.server_time || "";
+    renderGrid(summary.agents);
     resetCountdown();
-  } catch(e) {
-    console.error("load failed:", e);
-  } finally {
-    btn.classList.remove("spinning");
-  }
+  } catch(e) { console.error(e); }
+  finally { btn.classList.remove("loading"); }
 }
 
-// ── Render cards ──────────────────────────────────────────────────────────────
+// ── Cards ─────────────────────────────────────────────────────────────────────
 function renderGrid(agents) {
   const grid = document.getElementById("agent-grid");
   grid.innerHTML = "";
-  AGENTS_ORDER.forEach(key => {
+  ORDER.forEach(key => {
     const a = agents[key];
     if (!a) return;
     grid.appendChild(buildCard(key, a));
@@ -476,319 +424,572 @@ function renderGrid(agents) {
 
 function buildCard(key, a) {
   const card = document.createElement("div");
-  card.className = `card status-${a.status}`;
-  card.onclick = () => openDetail(key, a);
+  card.className = `card s-${a.status}`;
+  card.onclick = () => openPanel(key, a);
 
   let extra = "";
-
-  if (key === "travel" && a.deals && a.deals.length) {
-    const items = a.deals.slice(0, 3).map(deal => {
-      const icon = deal.priority === "steal" ? "🔥" : deal.priority === "alert" ? "🔔" : "✨";
-      return `<div class="deal-item">
-        <span>${icon}</span>
-        <span class="deal-route">${deal.route || ""}</span>
-        <span class="deal-price">${deal.price || ""}</span>
-      </div>`;
-    }).join("");
-    extra = `<div class="card-extra"><div class="deal-list">${items}</div></div>`;
+  if (key === "travel" && a.deals?.length) {
+    extra = `<div class="card-extra"><div class="deal-list">${a.deals.slice(0,3).map(d=>
+      `<div class="deal-row"><span>${d.priority==="steal"?"🔥":d.priority==="alert"?"🔔":"✨"}</span><span class="deal-route">${d.route||""}</span><span class="deal-price">${d.price||""}</span></div>`
+    ).join("")}</div></div>`;
   }
-
   if (key === "health" && a.last_weight) {
-    extra = `<div class="card-extra">
-      <span class="card-badge">⚖️ ${a.last_weight} → ${a.weight_goal}</span>
-    </div>`;
+    extra = `<div class="card-extra"><span class="badge">⚖️ ${a.last_weight} → ${a.weight_goal}</span></div>`;
   }
-
-  if (key === "followup" && a.overdue && a.overdue.length) {
-    const f = a.overdue[0];
-    extra = `<div class="card-extra">
-      <span class="card-badge" style="color:var(--yellow);border-color:rgba(251,191,36,.3)">⚠️ ${f.contact || ""}: ${(f.context || "").slice(0, 30)}</span>
-    </div>`;
+  if (key === "followup" && a.overdue?.length) {
+    extra = `<div class="card-extra"><span class="badge" style="color:var(--yellow);border-color:rgba(251,191,36,.3)">⚠️ ${a.overdue[0].contact}: ${(a.overdue[0].context||"").slice(0,28)}</span></div>`;
   }
-
   if (key === "market") {
-    const colorMap = { green: "var(--green)", yellow: "var(--yellow)", orange: "var(--orange)", gray: "var(--muted)" };
-    const c = colorMap[a.status] || "var(--muted)";
-    extra = `<div class="card-extra">
-      <span class="card-badge" style="color:${c};border-color:${c}33">${a.summary}</span>
-    </div>`;
+    const c={green:"var(--green)",yellow:"var(--yellow)",orange:"var(--orange)",gray:"var(--muted)"}[a.status]||"var(--muted)";
+    extra = `<div class="card-extra"><span class="badge" style="color:${c};border-color:${c}44">${a.summary}</span></div>`;
   }
-
   if (key === "calendar" && a.next) {
-    extra = `<div class="card-extra">
-      <span class="card-badge" style="font-family:inherit;font-size:.7rem">📍 ${a.next}</span>
-    </div>`;
+    extra = `<div class="card-extra"><span class="badge" style="font-family:inherit">📍 ${a.next}</span></div>`;
+  }
+  if (key === "investment") {
+    extra = `<div class="card-extra"><span class="badge">📊 tap for prices</span></div>`;
   }
 
   card.innerHTML = `
     <div class="card-header">
-      <div class="card-title">
-        <span class="card-icon">${a.icon}</span>
-        <span>${a.label}</span>
-      </div>
-      <div class="status-dot ${a.status}"></div>
+      <div class="card-title"><span class="card-icon">${a.icon}</span><span>${a.label}</span></div>
+      <div class="dot ${a.status}"></div>
     </div>
     <div class="card-summary">${a.summary}</div>
-    ${extra}
-  `;
+    ${extra}`;
   return card;
 }
 
-// ── Detail panel ──────────────────────────────────────────────────────────────
-async function openDetail(key, agentData) {
-  const panel   = document.getElementById("detail-panel");
-  const overlay = document.getElementById("detail-overlay");
-  const title   = document.getElementById("detail-title");
-  const body    = document.getElementById("detail-body");
-
-  title.innerHTML = `<span>${agentData.icon}</span> ${agentData.label}`;
-  body.innerHTML  = shimmerBlock(3);
-  panel.classList.add("open");
-  overlay.classList.add("open");
-
+// ── Panel ──────────────────────────────────────────────────────────────────────
+async function openPanel(key, a) {
+  document.getElementById("ptitle").innerHTML = `<span>${a.icon}</span> ${a.label}`;
+  document.getElementById("pbody").innerHTML = shimmer(3);
+  document.getElementById("panel").classList.add("open");
+  document.getElementById("overlay").classList.add("open");
   try {
-    const renderers = {
-      health:  async () => renderHealthDetail(await apiFetch("/api/health")),
-      travel:  async () => renderTravelDetail(await apiFetch("/api/travel")),
-      followup:async () => renderFollowupDetail(await apiFetch("/api/followups")),
-      calendar:async () => renderCalendarDetail(await apiFetch("/api/calendar")),
-      email:   async () => renderEmailDetail(await apiFetch("/api/email")),
-      finance: async () => renderFinanceDetail(await apiFetch("/api/finance")),
-      tasks:   async () => renderTasksDetail(await apiFetch("/api/tasks")),
+    const map = {
+      health:     () => api("/api/health").then(renderHealth),
+      finance:    () => api("/api/finance").then(renderFinance),
+      market:     () => api("/api/market").then(renderMarket),
+      calendar:   () => api("/api/calendar").then(renderCalendar),
+      email:      () => api("/api/email").then(renderEmail),
+      travel:     () => api("/api/travel").then(renderTravel),
+      followup:   () => api("/api/followups").then(renderFollowup),
+      bonus:      () => api("/api/bonus").then(renderBonus),
+      social:     () => api("/api/social").then(renderSocial),
+      mortgage:   () => api("/api/mortgage").then(renderMortgage),
+      infusion:   () => renderInfusion(a),
+      investment: () => api("/api/investment").then(renderInvestment),
+      tasks:      () => api("/api/tasks").then(renderTasks),
     };
-    const fn = renderers[key];
-    body.innerHTML = fn ? await fn() : renderGenericDetail(agentData);
+    const fn = map[key];
+    document.getElementById("pbody").innerHTML = fn ? await fn() : renderGeneric(a);
   } catch(e) {
-    body.innerHTML = `<div class="error-msg">Could not load data<br><small>${e.message}</small></div>`;
+    document.getElementById("pbody").innerHTML = `<div class="empty-msg">Could not load data<br><small>${e.message}</small></div>`;
   }
 }
 
-function closeDetail() {
-  document.getElementById("detail-panel").classList.remove("open");
-  document.getElementById("detail-overlay").classList.remove("open");
+function closePanel() {
+  document.getElementById("panel").classList.remove("open");
+  document.getElementById("overlay").classList.remove("open");
 }
 
-function shimmerBlock(n) {
-  return Array(n).fill(0).map((_,i) =>
-    `<div class="shimmer" style="width:${[100,70,85,55,90][i%5]}%;margin-bottom:.5rem"></div>`
-  ).join("");
+function shimmer(n) {
+  return Array(n).fill(0).map((_,i)=>`<div class="shimmer" style="width:${[100,70,85,55,90][i%5]}%;margin-bottom:.5rem"></div>`).join("");
 }
 
-// ── Shared helpers ────────────────────────────────────────────────────────────
-function row(key, value, style="") {
-  return `<div class="detail-row">
-    <span class="detail-key">${key}</span>
-    <span class="detail-value" ${style ? `style="${style}"` : ""}>${value}</span>
-  </div>`;
+// ── Shared atoms ──────────────────────────────────────────────────────────────
+const row = (k,v,s="") => `<div class="drow"><span class="dk">${k}</span><span class="dv"${s?` style="${s}"`:""}>${v}</span></div>`;
+const sec = l => `<div class="dsec">${l}</div>`;
+const pbar = (label, val, max, unit="") => {
+  const pct = max ? Math.min(100, Math.round(val/max*100)) : 0;
+  const cls = pct>=75?"":"warn";
+  return `<div class="prow"><div class="plabel"><span>${label}</span><strong>${val}${unit} / ${max}${unit}</strong></div><div class="pbar"><div class="pfill ${cls}" style="width:${pct}%"></div></div></div>`;
+};
+const actionBtn = (label, action, icon="🔄") =>
+  `<button class="action-btn" onclick="runAction('${action}',this)">${icon} ${label}</button><div class="action-result" id="res-${action}"></div>`;
+
+// ── SVG sparklines ─────────────────────────────────────────────────────────────
+function sparkline(values, {width=180, height=36, color="var(--green)", fill=true}={}) {
+  const nums = values.map(v => parseFloat(v)).filter(v => !isNaN(v));
+  if (nums.length < 2) return `<svg width="${width}" height="${height}"></svg>`;
+  const min = Math.min(...nums), max = Math.max(...nums);
+  const range = max - min || 1;
+  const pts = nums.map((v, i) => {
+    const x = (i / (nums.length-1)) * width;
+    const y = height - ((v - min) / range) * (height - 4) - 2;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  const fillPath = fill ? `<polygon points="0,${height} ${pts} ${width},${height}" fill="${color}" opacity="0.12"/>` : "";
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="overflow:visible">
+    ${fillPath}
+    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`;
 }
 
-function section(label) {
-  return `<div class="detail-section">${label}</div>`;
+function barChart(values, {width=180, height=28, color="var(--accent)"}={}) {
+  const nums = values.map(v => parseFloat(v)).filter(v => !isNaN(v));
+  if (!nums.length) return "";
+  const max = Math.max(...nums, 0.1);
+  const bw  = Math.floor(width / nums.length) - 2;
+  const bars = nums.map((v, i) => {
+    const h = Math.max(2, Math.round((v / max) * height));
+    const x = i * (bw + 2);
+    const y = height - h;
+    return `<rect x="${x}" y="${y}" width="${bw}" height="${h}" rx="2" fill="${color}" opacity="0.75"/>`;
+  }).join("");
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${bars}</svg>`;
 }
 
-function progressRow(label, value, max, unit="", warnAt=0.5) {
-  const pct = max ? Math.min(100, Math.round((value / max) * 100)) : 0;
-  const cls = pct >= 75 ? "" : pct >= warnAt * 100 ? "warn" : "low";
-  return `<div class="metric-row">
-    <div class="metric-label">
-      <span>${label}</span>
-      <strong>${value}${unit} / ${max}${unit}</strong>
-    </div>
-    <div class="progress-wrap">
-      <div class="progress-fill ${cls}" style="width:${pct}%"></div>
-    </div>
-  </div>`;
-}
+// ── Renderers ─────────────────────────────────────────────────────────────────
+function renderHealth(d) {
+  let h = "";
+  if (d.last_weight) h += row("Last weight", `${d.last_weight.value} lbs — ${d.last_weight.date}`);
+  h += row("Weight goal", "165 lbs");
+  if (d.last_sleep) h += row("Last sleep", `${d.last_sleep.value}h — ${d.last_sleep.date}`);
+  h += row("Sleep goal", "7.5h/night");
+  h += row("Meals today", d.meals_today);
+  h += pbar("Workouts this week", d.workouts_week, d.workout_goal);
 
-// ── Detail renderers ──────────────────────────────────────────────────────────
-function renderHealthDetail(d) {
-  let html = "";
-  if (d.last_weight) html += row("Last weight", `${d.last_weight.value} lbs — ${d.last_weight.date}`);
-  html += row("Weight goal", `${d.targets?.weight || 165} lbs`);
-  if (d.last_sleep) html += row("Last sleep", `${d.last_sleep.value}h — ${d.last_sleep.date}`);
-  html += row("Sleep goal", `${d.targets?.sleep || 7.5}h/night`);
-  html += row("Meals today", d.meals_today);
-  html += progressRow("Workouts this week", d.workouts_week, d.workout_goal);
-  if (d.targets) {
-    html += section("Daily Targets");
-    html += row("Protein goal", `${d.targets.protein}g / day`);
-    html += row("Calorie goal", `${d.targets.calories} kcal / day`);
+  if (d.weight_history?.length >= 3) {
+    const vals = d.weight_history.map(w=>w.value);
+    const first = parseFloat(vals[0]), last = parseFloat(vals[vals.length-1]);
+    const trend = first > last ? "var(--green)" : first < last ? "var(--red)" : "var(--muted)";
+    h += sec("Weight Trend (14d)");
+    h += `<div style="margin:.3rem 0">${sparkline(vals, {width:200,height:40,color:trend})}</div>`;
+    h += `<div style="font-size:.67rem;color:var(--muted);display:flex;justify-content:space-between;margin-top:.1rem"><span>${d.weight_history[0].date.slice(5)}</span><span>${d.weight_history[d.weight_history.length-1].date.slice(5)}</span></div>`;
   }
-  if (d.recent_logs && d.recent_logs.length) {
-    html += section("Recent Logs");
-    html += `<div class="log-list">`;
-    d.recent_logs.slice(0, 20).forEach(l => {
-      html += `<div class="log-item">
-        <span class="log-date">${(l.date || "").slice(5,10)}</span>
-        <span class="log-metric">${l.metric || ""}</span>
-        <span class="log-value">${String(l.value || "").slice(0, 60)}</span>
+
+  if (d.sleep_history?.length >= 3) {
+    sec_added = true;
+    h += sec("Sleep (7 nights)");
+    h += `<div style="margin:.3rem 0">${barChart(d.sleep_history.map(s=>s.value),{width:200,height:32,color:"var(--purple)"})}</div>`;
+    const avg = d.sleep_history.reduce((a,s)=>a+parseFloat(s.value),0)/d.sleep_history.length;
+    h += `<div style="font-size:.67rem;color:var(--muted)">Avg ${avg.toFixed(1)}h · goal 7.5h</div>`;
+  }
+
+  if (d.workout_week_grid?.length) {
+    h += sec("Workouts This Week");
+    const days = ["Su","Mo","Tu","We","Th","Fr","Sa"];
+    h += `<div class="workout-grid">${d.workout_week_grid.map(w=>{
+      const day = days[new Date(w.date+"T12:00:00").getDay()];
+      return `<div class="wd ${w.done?"done":"miss"}" title="${w.date}">${w.done?"✓":day}</div>`;
+    }).join("")}</div>`;
+  }
+
+  if (d.recent_logs?.length) {
+    h += sec("Recent Logs");
+    h += d.recent_logs.slice(0,15).map(l=>`
+      <div class="log-item">
+        <span class="ld">${(l.date||"").slice(5,10)}</span>
+        <span class="lm">${l.metric||""}</span>
+        <span class="lv">${String(l.value||"").slice(0,55)}</span>
+      </div>`).join("");
+  }
+  return h;
+}
+
+function renderFinance(d) {
+  let h = "";
+  if (d.net_worth && d.net_worth !== "—") h += row("Net worth snapshot", d.net_worth);
+  h += row("Profile updated", d.profile_updated||"—");
+  h += row("Last bonus scan", d.last_bonus_scan||"—");
+
+  const cat = d.budget_by_category || {};
+  const catKeys = Object.keys(cat).sort((a,b)=>cat[b]-cat[a]);
+  if (catKeys.length) {
+    h += sec("This Month by Category");
+    const total = catKeys.reduce((s,k)=>s+cat[k],0);
+    catKeys.forEach(k => {
+      const pct = Math.round(cat[k]/total*100);
+      h += `<div class="prow">
+        <div class="plabel"><span>${k}</span><strong>$${cat[k].toLocaleString()}</strong></div>
+        <div class="pbar"><div class="pfill" style="width:${pct}%"></div></div>
       </div>`;
     });
-    html += `</div>`;
   }
+
+  if (d.last_offers?.length) {
+    h += sec("Latest Elevated Offers");
+    d.last_offers.forEach(o => {
+      const name = typeof o === "string" ? o : (o.card || o.name || JSON.stringify(o));
+      h += `<div class="offer-item"><div class="offer-name">🎯 ${name}</div></div>`;
+    });
+  }
+
+  if (d.side_hustles?.length) {
+    h += sec("Side Hustle Ideas");
+    d.side_hustles.forEach(s => {
+      const name = typeof s === "string" ? s : (s.name||s.title||"—");
+      const meta = typeof s === "object" ? (s.rating||s.status||"") : "";
+      h += `<div class="offer-item"><div class="offer-name">${name}</div>${meta?`<div class="offer-meta">${meta}</div>`:""}</div>`;
+    });
+  }
+
+  if (d.recent_budget?.length) {
+    h += sec("Recent Budget Entries");
+    [...d.recent_budget].reverse().slice(0,8).forEach(b=>{
+      h += row(`${b.category||"?"} · ${(b.date||"").slice(5,10)}`, `$${b.amount||"?"} — ${(b.note||"").slice(0,28)}`);
+    });
+  }
+  h += actionBtn("Run Bonus Scan", "bonus_scan", "🎯");
+  return h;
+}
+
+function renderMarket(d) {
+  const cmap = {green:"var(--green)",yellow:"var(--yellow)",orange:"var(--orange)",gray:"var(--muted)"};
+  const c = cmap[d.color]||"var(--muted)";
+  let h = row("Session", `<span style="color:${c};font-weight:700">${d.session}</span>`);
+  h += row("Time", d.time_et||"—");
+  if (d.next_open) h += row("Next open", d.next_open);
+
+  const stocks = d.stocks||[];
+  if (d.error && !stocks.length) {
+    h += `<div class="empty-msg">yfinance unavailable<br><small>${d.error}</small></div>`;
+    return h;
+  }
+  h += sec("Watchlist");
+  h += `<div class="stock-grid">`;
+  stocks.forEach(s => {
+    if (!s.price) { h += `<div class="stock-card"><div class="stock-ticker">${s.ticker}</div><div style="font-size:.7rem;color:var(--muted)">No data</div></div>`; return; }
+    const up = (s.change_pct||0) >= 0;
+    const sign = up ? "+" : "";
+    const pct = s.pos_pct != null ? s.pos_pct : null;
+    h += `<div class="stock-card">
+      <div class="stock-ticker">${s.ticker}</div>
+      <div class="stock-price">$${s.price}</div>
+      <div class="stock-change ${up?"up":"down"}">${sign}${s.change_pct!=null?s.change_pct+"% today":"—"}</div>
+      ${pct != null ? `<div class="stock-range" title="52-week range">
+        <div class="range-bar"><div class="range-dot" style="left:${pct}%"></div></div>
+        <div class="range-labels"><span>$${s.week52_low}</span><span>$${s.week52_high}</span></div>
+      </div>` : ""}
+    </div>`;
+  });
+  h += `</div>`;
+  if (d.fetched_at) h += `<div style="margin-top:.75rem;font-size:.62rem;color:var(--muted)">Prices cached 5 min · ${new Date(d.fetched_at).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"})}</div>`;
+  return h;
+}
+
+function renderCalendar(d) {
+  if (!d.configured) return `<div class="empty-msg">Google Calendar not connected.</div>`;
+  const events = d.events||[];
+  if (!events.length) return `<div class="empty-msg">No events in the next 7 days.</div>`;
+
+  h_top = "";
+  if (d.today_count || d.tomorrow_count) {
+    h_top += row("Today", d.today_count||0);
+    h_top += row("Tomorrow", d.tomorrow_count||0);
+  }
+
+  // Group by date
+  const groups = {};
+  events.forEach(e => {
+    const dt = e.start?.dateTime || e.start?.date || "";
+    const day = dt.slice(0,10);
+    if (!groups[day]) groups[day] = [];
+    groups[day].push(e);
+  });
+
+  // Detect overlaps per day
+  let html = h_top;
+  const today = new Date().toISOString().slice(0,10);
+  const tom   = new Date(Date.now()+86400000).toISOString().slice(0,10);
+
+  Object.keys(groups).sort().forEach(day => {
+    const label = day===today?"Today":day===tom?"Tomorrow":new Date(day+"T12:00:00").toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"});
+    html += sec(label);
+    const evs = groups[day];
+    evs.forEach((e, i) => {
+      const startRaw = e.start?.dateTime||e.start?.date||"";
+      const endRaw   = e.end?.dateTime||e.end?.date||"";
+      let timeStr = "";
+      if (e.start?.dateTime) {
+        try {
+          const s = new Date(startRaw), en = new Date(endRaw);
+          timeStr = s.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"})
+                  + " – " + en.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"});
+        } catch {}
+      } else { timeStr = "All day"; }
+
+      // Conflict check: overlaps next event
+      let conflict = false;
+      if (e.start?.dateTime && evs[i+1]?.start?.dateTime) {
+        conflict = new Date(endRaw) > new Date(evs[i+1].start.dateTime);
+      }
+
+      html += `<div class="ev-item ${conflict?"conflict":""}">
+        <div class="ev-name">${e.summary||"Untitled"}${conflict?" ⚠️":""}</div>
+        <div class="ev-time">${timeStr}</div>
+        ${e.location?`<div class="ev-loc">📍 ${e.location.slice(0,55)}</div>`:""}
+        ${e.html_link?`<div class="ev-link"><a href="${e.html_link}" target="_blank">Open in Calendar ↗</a></div>`:""}
+      </div>`;
+    });
+  });
   return html;
 }
 
-function renderTravelDetail(d) {
-  if (!d.live) {
-    return `<div class="error-msg">No live data yet.<br><small>Flight tracker runs Mon/Wed/Fri 8AM ET</small></div>
-      ${section("Repo")}
-      ${row("GitHub", '<a href="https://github.com/jng-ai/flight-tracker" style="color:var(--accent)" target="_blank">jng-ai/flight-tracker ↗</a>')}`;
-  }
-  let html = "";
-  html += row("Last scan", d.last_updated ? new Date(d.last_updated).toLocaleString("en-US", {month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : "—");
-  html += row("🔥 Steals", d.steals || 0, d.steals ? "color:var(--yellow);font-weight:700" : "");
-  html += row("🔔 Deals", d.alerts || 0);
-  html += row("✨ Award space", d.awards || 0, "color:var(--purple)");
+function renderEmail(d) {
+  if (!d.configured) return `<div class="empty-msg">Gmail not connected.</div>`;
+  const accts = d.accounts||[];
+  if (!d.total_count) return `<div class="empty-msg">Inbox zero 🎉</div>`;
 
-  const deals = d.deals || [];
+  let html = row("Total unread", d.total_count);
+  if (d.urgent_count) html += row("Urgent 🔴", d.urgent_count, "color:var(--red);font-weight:700");
+
+  accts.forEach(a => {
+    if (!a.unread?.length) return;
+    html += sec(`${a.address} (${a.count})`);
+    a.unread.slice(0,10).forEach((m,i) => {
+      const urg = m.urgency===2?"🔴":m.urgency===1?"🟡":"⚪";
+      const id  = `em-${a.address.replace(/[@.]/g,"-")}-${i}`;
+      html += `<div class="em-item" id="${id}" onclick="toggleEmail('${id}')">
+        <div class="em-urg">${urg}</div>
+        <div class="em-body" style="overflow:hidden">
+          <div class="em-subj">${(m.subject||"(no subject)").slice(0,55)}</div>
+          <div class="em-from">${(m.from||"").slice(0,45)}</div>
+          <div class="em-snip">${(m.snippet||"").slice(0,120)}</div>
+        </div>
+      </div>`;
+    });
+  });
+  return html;
+}
+
+function renderTravel(d) {
+  if (!d.live) return `<div class="empty-msg">No live flight data yet.<br><small>Tracker runs Mon/Wed/Fri 8AM ET</small></div>
+    ${sec("Repo")}${row("GitHub","<a href='https://github.com/jng-ai/flight-tracker' target='_blank'>jng-ai/flight-tracker ↗</a>")}`;
+
+  let h = row("Last scan", d.last_updated?new Date(d.last_updated).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}):"—");
+  h += row("🔥 Steals", d.steals||0, d.steals?"color:var(--yellow);font-weight:700":"");
+  h += row("🔔 Deals", d.alerts||0);
+  h += row("✨ Award space", d.awards||0, "color:var(--purple)");
+
+  const deals = d.deals||[];
   if (deals.length) {
-    html += section("Top Deals");
+    h += sec("Top Deals");
     deals.forEach(deal => {
-      const icon = deal.priority === "steal" ? "🔥" : deal.priority === "alert" ? "🔔" : "✨";
-      const pctBadge = deal.pctUnder > 0
-        ? `<span style="color:var(--green);font-size:.65rem;margin-left:.3rem">${deal.pctUnder}% under avg</span>` : "";
-      html += `<div class="deal-block">
-        <div class="deal-header">${icon} ${deal.route || ""} — <span style="color:var(--yellow)">${deal.price || ""}</span>${pctBadge}</div>
-        <div class="deal-meta-line">${(deal.meta || "").slice(0, 80)}</div>
+      const icon = deal.priority==="steal"?"🔥":deal.priority==="alert"?"🔔":"✨";
+      const pct  = deal.pctUnder>0?` <span style="color:var(--green);font-size:.65rem">↓${deal.pctUnder}% avg</span>`:"";
+      h += `<div class="deal-block">
+        <div class="deal-hdr">${icon} ${deal.route||""} — <span style="color:var(--yellow)">${deal.price||""}</span>${pct}</div>
+        <div class="deal-meta">${(deal.meta||"").slice(0,80)}</div>
+        ${deal.booking_url?`<div style="margin-top:.2rem"><a href="${deal.booking_url}" target="_blank" style="font-size:.67rem">Book →</a></div>`:""}
       </div>`;
     });
   }
-  html += section("Repo");
-  html += row("GitHub", '<a href="https://github.com/jng-ai/flight-tracker" style="color:var(--accent)" target="_blank">jng-ai/flight-tracker ↗</a>');
-  return html;
+
+  const cash = d.cash_deals||[];
+  if (cash.length) {
+    h += sec("Cash Deals (escape.flights)");
+    cash.slice(0,5).forEach(c=>{
+      h += `<div class="deal-block">
+        <div class="deal-hdr">✈️ ${c.route||c.title||""} — <span style="color:var(--yellow)">${c.price||""}</span></div>
+        <div class="deal-meta">${(c.meta||c.description||"").slice(0,70)}</div>
+        ${c.url?`<a href="${c.url}" target="_blank" style="font-size:.67rem">Book →</a>`:""}
+      </div>`;
+    });
+  }
+
+  h += sec("Repo");
+  h += row("GitHub", "<a href='https://github.com/jng-ai/flight-tracker' target='_blank'>jng-ai/flight-tracker ↗</a>");
+  return h;
 }
 
-function renderFollowupDetail(d) {
-  const pending = d.pending || [];
-  const overdue = d.overdue || [];
-  const upcoming = d.upcoming || [];
-
-  if (!pending.length) return `<div class="error-msg">No pending follow-ups ✅</div>`;
-
-  let html = row("Total pending", pending.length) + row("Overdue", overdue.length, overdue.length ? "color:var(--yellow);font-weight:700" : "");
-
+function renderFollowup(d) {
+  const pending = d.pending||[], overdue=d.overdue||[], upcoming=d.upcoming||[];
+  if (!pending.length) return `<div class="empty-msg">No pending follow-ups ✅</div>`;
+  let h = row("Total", pending.length)+row("Overdue", overdue.length, overdue.length?"color:var(--yellow);font-weight:700":"");
   if (overdue.length) {
-    html += section("⚠️ Overdue");
-    overdue.forEach(f => {
-      html += `<div class="event-item">
-        <div class="event-name">${f.contact || "?"}</div>
-        <div class="event-time">Due ${f.due_date || "?"} · ${f.type || "follow-up"}</div>
-        <div class="event-loc">${(f.context || "").slice(0, 70)}</div>
+    h += sec("⚠️ Overdue");
+    overdue.forEach(f=>{
+      h += `<div class="ev-item">
+        <div class="ev-name">${f.contact||"?"}</div>
+        <div class="ev-time">Due ${f.due_date||"?"} · ${f.type||"follow-up"}</div>
+        <div class="ev-loc">${(f.context||"").slice(0,65)}</div>
       </div>`;
     });
   }
   if (upcoming.length) {
-    html += section("Upcoming");
-    upcoming.slice(0, 6).forEach(f => {
-      html += `<div class="event-item">
-        <div class="event-name">${f.contact || "?"}</div>
-        <div class="event-time">Due ${f.due_date || "?"} · ${f.type || "follow-up"}</div>
-        <div class="event-loc">${(f.context || "").slice(0, 60)}</div>
+    h += sec("Upcoming");
+    upcoming.slice(0,6).forEach(f=>{
+      h += `<div class="ev-item">
+        <div class="ev-name">${f.contact||"?"}</div>
+        <div class="ev-time">Due ${f.due_date||"?"} · ${f.type||"follow-up"}</div>
+        ${f.context?`<div class="ev-loc">${f.context.slice(0,55)}</div>`:""}
       </div>`;
     });
   }
-  return html;
+  return h;
 }
 
-function renderCalendarDetail(d) {
-  if (!d.configured) return `<div class="error-msg">Google Calendar not connected.</div>`;
-  const events = d.events || [];
-  if (!events.length) return `<div class="error-msg">No events in the next 7 days.</div>`;
+function renderBonus(d) {
+  let h = row("Last scan", d.last_scan?new Date(d.last_scan).toLocaleDateString():"Never");
+  h += row("Elevated offers found", d.last_count||0, d.last_count?"color:var(--green)":"");
+  if (d.last_alert) h += row("Last alert sent", new Date(d.last_alert).toLocaleDateString());
 
-  let html = section("Next 7 Days");
-  events.forEach(e => {
-    const raw = e.start?.dateTime || e.start?.date || "";
-    let label = raw;
-    try {
-      const dt = new Date(raw);
-      label = dt.toLocaleDateString("en-US", {weekday:"short",month:"short",day:"numeric"})
-             + (e.start?.dateTime ? " · " + dt.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}) : "");
-    } catch {}
-    html += `<div class="event-item">
-      <div class="event-name">${e.summary || "Untitled"}</div>
-      <div class="event-time">${label}</div>
-      ${e.location ? `<div class="event-loc">📍 ${e.location.slice(0,50)}</div>` : ""}
-    </div>`;
-  });
-  return html;
-}
-
-function renderEmailDetail(d) {
-  if (!d.configured) return `<div class="error-msg">Gmail not connected.</div>`;
-  const emails = d.unread || [];
-  const count = d.count || emails.length;
-  let html = row("Unread", `${count}${count >= 20 ? "+" : ""}`);
-  if (!emails.length) return html;
-
-  html += section("Recent Unread");
-  emails.slice(0, 10).forEach(m => {
-    html += `<div class="email-item">
-      <div class="email-subject">${(m.subject || "(no subject)").slice(0, 55)}</div>
-      <div class="email-from">${(m.from || "").slice(0, 45)}</div>
-    </div>`;
-  });
-  return html;
-}
-
-function renderFinanceDetail(d) {
-  let html = "";
-  if (d.net_worth && d.net_worth !== "—") html += row("Net worth", d.net_worth);
-  html += row("Profile updated", d.profile_updated || "—");
-  html += row("Last bonus scan", d.last_bonus_scan || "—");
-
-  const budget = d.recent_budget || [];
-  if (budget.length) {
-    html += section("Recent Budget Logs");
-    [...budget].reverse().slice(0, 8).forEach(b => {
-      html += `<div class="detail-row">
-        <span class="detail-key">${b.category || "?"} · ${(b.date || "").slice(5,10)}</span>
-        <span class="detail-value">$${b.amount || "?"} — ${(b.note || "").slice(0, 30)}</span>
-      </div>`;
+  if (d.last_offers?.length) {
+    h += sec("Last Elevated Offers");
+    d.last_offers.forEach(o=>{
+      const name = typeof o==="string"?o:(o.card||o.name||JSON.stringify(o));
+      const meta = typeof o==="object"?(o.bonus||o.details||""):"";
+      h += `<div class="offer-item"><div class="offer-name">🎯 ${name}</div>${meta?`<div class="offer-meta">${meta}</div>`:""}</div>`;
     });
+  } else {
+    h += `<div class="empty-msg" style="padding:1rem 0">No elevated offers on last scan</div>`;
   }
-  return html;
+  h += actionBtn("Run Bonus Scan Now", "bonus_scan", "🎯");
+  return h;
 }
 
-function renderTasksDetail(d) {
-  const open = d.open || [];
-  if (!open.length) return `<div class="error-msg">No open tasks ✅</div>`;
-  let html = row("Open tasks", open.length) + section("Open");
-  open.slice(0, 10).forEach(t => {
-    html += `<div class="event-item">
-      <div class="event-name">${(t.title || t.text || "Task").slice(0, 60)}</div>
-      ${t.due_date ? `<div class="event-time">Due ${t.due_date}</div>` : ""}
+function renderSocial(d) {
+  const events = d.events||[];
+  if (!events.length) {
+    return `<div class="empty-msg">No cached events yet.<br><small>Runs Tue/Fri 9 AM</small></div>`
+      + actionBtn("Scan NYC Events Now", "social_scan", "🎉");
+  }
+  let h = row("Events cached", events.length);
+  if (d.cached_at) h += row("Last scan", new Date(d.cached_at).toLocaleDateString());
+  h += sec("Upcoming Events");
+  events.slice(0,10).forEach(e=>{
+    h += `<div class="ev-item">
+      <div class="ev-name">${e.name||e.title||"?"}</div>
+      <div class="ev-time">${e.date||""} ${e.venue?`· ${e.venue}`:""}</div>
+      ${e.cost?`<div class="ev-loc">💰 ${e.cost}</div>`:""}
+      ${e.url?`<div class="ev-link"><a href="${e.url}" target="_blank">RSVP ↗</a></div>`:""}
     </div>`;
   });
-  return html;
+  h += actionBtn("Refresh Event Scan", "social_scan", "🔄");
+  return h;
 }
 
-function renderGenericDetail(a) {
-  let html = row("Status", a.summary);
-  if (a.last_scan) html += row("Last scan", a.last_scan);
-  html += `<p style="margin-top:1.5rem;font-size:.75rem;color:var(--muted)">Interact with this agent via Telegram.</p>`;
-  return html;
+function renderMortgage(d) {
+  const listings = d.listings||[];
+  if (!listings.length) {
+    return `<div class="empty-msg">No cached listings.<br><small>Ask "scan Paperstac" in Telegram</small></div>`
+      + actionBtn("Scan Paperstac Now", "mortgage_scan", "🏠");
+  }
+  let h = "";
+  if (d.last_scan) h += row("Last scan", new Date(d.last_scan).toLocaleDateString());
+  h += row("Listings found", listings.length);
+  const strong = listings.filter(l=>(l.rating||"").toUpperCase()==="STRONG");
+  if (strong.length) h += row("STRONG rated", strong.length, "color:var(--green);font-weight:700");
+  h += sec("Listings (STRONG/GOOD)");
+  listings.filter(l=>["STRONG","GOOD"].includes((l.rating||"").toUpperCase())).forEach(l=>{
+    const disc  = l.discount_pct!=null?` · ${l.discount_pct}% disc`:"";
+    const yield_ = l.yield_est?` · ~${l.yield_est}% yield`:"";
+    const color = l.rating?.toUpperCase()==="STRONG"?"var(--green)":"var(--yellow)";
+    h += `<div class="offer-item">
+      <div class="offer-name" style="display:flex;justify-content:space-between">
+        <span>🏠 ${l.state||"?"} · $${(l.upb||"?").toLocaleString?Number(l.upb||0).toLocaleString():l.upb}</span>
+        <span style="color:${color};font-size:.72rem;font-weight:700">${l.rating||""}</span>
+      </div>
+      <div class="offer-meta">Ask $${l.ask||"?"}${disc}${yield_} · ${l.type||""}</div>
+      ${l.url?`<div style="margin-top:.2rem"><a href="${l.url}" target="_blank" style="font-size:.67rem">View on Paperstac →</a></div>`:""}
+    </div>`;
+  });
+  h += actionBtn("Re-scan Paperstac", "mortgage_scan", "🔄");
+  return h;
 }
 
-// ── Auto-refresh countdown ────────────────────────────────────────────────────
+function renderInvestment(d) {
+  const stocks = d.stocks||[];
+  if (d.error && !stocks.length) return `<div class="empty-msg">yfinance unavailable<br><small>${d.error}</small></div>`;
+  const up   = stocks.filter(s=>(s.change_pct||0)>=0).length;
+  const down = stocks.filter(s=>(s.change_pct||0)<0).length;
+  let h = row("Watchlist", `${d.watchlist?.join(", ") || WATCHLIST.join(", ")}`);
+  h += row("Today", `<span style="color:var(--green)">${up} ▲</span> <span style="color:var(--red)">${down} ▼</span>`);
+  h += sec("Prices");
+  h += `<div class="stock-grid">`;
+  stocks.forEach(s=>{
+    if (!s.price) { h+=`<div class="stock-card"><div class="stock-ticker">${s.ticker}</div><div style="font-size:.7rem;color:var(--muted)">No data</div></div>`; return; }
+    const up2 = (s.change_pct||0)>=0;
+    const sign = up2?"+":"";
+    const pct  = s.pos_pct!=null?s.pos_pct:null;
+    h+=`<div class="stock-card">
+      <div class="stock-ticker">${s.ticker}</div>
+      <div class="stock-price">$${s.price}</div>
+      <div class="stock-change ${up2?"up":"down"}">${sign}${s.change_pct!=null?s.change_pct+"%":"—"}</div>
+      ${pct!=null?`<div class="stock-range">
+        <div class="range-bar"><div class="range-dot" style="left:${pct}%"></div></div>
+        <div class="range-labels"><span>$${s.week52_low}</span><span>$${s.week52_high}</span></div>
+      </div>`:""}
+    </div>`;
+  });
+  h += `</div>`;
+  if (d.fetched_at) h += `<div style="margin-top:.75rem;font-size:.62rem;color:var(--muted)">Cached 5 min · ${new Date(d.fetched_at).toLocaleTimeString()}</div>`;
+  return h;
+}
+
+function renderInfusion(a) {
+  return `${row("Status", a.summary)}
+    <p style="margin-top:1rem;font-size:.75rem;color:var(--muted)">Ask for hospital infusion ops intel, benchmarks, SOW drafts, or opportunity identification via Telegram.</p>`;
+}
+
+function renderTasks(d) {
+  const open = d.open||[];
+  if (!open.length) return `<div class="empty-msg">No open tasks ✅</div>`;
+  let h = row("Open", open.length);
+  h += sec("Open Tasks");
+  open.slice(0,10).forEach(t=>{
+    h += `<div class="ev-item">
+      <div class="ev-name">${(t.title||t.text||"Task").slice(0,60)}</div>
+      ${t.due_date?`<div class="ev-time">Due ${t.due_date}</div>`:""}
+    </div>`;
+  });
+  return h;
+}
+
+function renderGeneric(a) {
+  let h = row("Status", a.summary);
+  if (a.last_scan) h += row("Last scan", a.last_scan);
+  h += `<p style="margin-top:1.5rem;font-size:.75rem;color:var(--muted)">Interact via Telegram.</p>`;
+  return h;
+}
+
+// ── Email expand ──────────────────────────────────────────────────────────────
+function toggleEmail(id) {
+  document.getElementById(id)?.classList.toggle("expanded");
+}
+
+// ── Action runner ─────────────────────────────────────────────────────────────
+async function runAction(action, btn) {
+  btn.disabled = true;
+  btn.classList.add("running");
+  btn.textContent = "Running…";
+  const resEl = document.getElementById(`res-${action}`);
+  if (resEl) { resEl.className = "action-result"; resEl.textContent = ""; }
+  try {
+    const r = await fetch(`/api/action/${action}`, { method: "POST" });
+    const d = await r.json();
+    if (resEl) {
+      resEl.className = `action-result ${d.success?"ok":"err"}`;
+      resEl.textContent = d.success ? `✓ ${d.result||"Done"} (${d.duration_ms}ms)` : `✗ ${d.error}`;
+    }
+  } catch(e) {
+    if (resEl) { resEl.className = "action-result err"; resEl.textContent = `✗ ${e.message}`; }
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("running");
+    btn.innerHTML = `🔄 ${btn.dataset.label||action.replace(/_/g," ")}`;
+  }
+}
+
+// ── Countdown ──────────────────────────────────────────────────────────────────
 function resetCountdown() {
-  countdown = REFRESH_SECS;
-  document.getElementById("countdown").textContent = countdown;
-  document.getElementById("refresh-progress").style.width = "100%";
+  countdown = REFRESH;
+  document.getElementById("rcount").textContent = countdown;
+  document.getElementById("rprog").style.width  = "100%";
 }
-
 function startCountdown() {
-  if (countdownTimer) clearInterval(countdownTimer);
-  countdownTimer = setInterval(() => {
+  if (timer) clearInterval(timer);
+  timer = setInterval(() => {
     countdown = Math.max(0, countdown - 1);
-    document.getElementById("countdown").textContent = countdown;
-    const pct = (countdown / REFRESH_SECS * 100).toFixed(1);
-    document.getElementById("refresh-progress").style.width = pct + "%";
+    document.getElementById("rcount").textContent = countdown;
+    document.getElementById("rprog").style.width  = (countdown/REFRESH*100).toFixed(1)+"%";
     if (countdown === 0) loadAll();
   }, 1000);
 }
 
-// ── Init ──────────────────────────────────────────────────────────────────────
 loadAll();
 startCountdown();
 </script>
