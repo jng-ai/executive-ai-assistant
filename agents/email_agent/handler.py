@@ -11,8 +11,31 @@ v2 additions:
 """
 
 import json
+import os
+from pathlib import Path
 from core.llm import chat
 from integrations.google.auth import is_configured
+
+_DRAFT_STATE_PATH = Path(__file__).parent.parent.parent / "data" / "email_draft_state.json"
+
+
+def _save_draft_state(state: dict) -> None:
+    """Persist the last draft/reply so 'send it' can retrieve it."""
+    try:
+        _DRAFT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _DRAFT_STATE_PATH.write_text(json.dumps(state))
+    except Exception:
+        pass
+
+
+def _load_draft_state() -> dict:
+    """Load the last saved draft/reply state."""
+    try:
+        if _DRAFT_STATE_PATH.exists():
+            return json.loads(_DRAFT_STATE_PATH.read_text())
+    except Exception:
+        pass
+    return {}
 
 SYSTEM = """You are Justin Ngai's executive email assistant. You help draft, send, and manage his Gmail.
 
@@ -164,12 +187,17 @@ def handle(message: str) -> str:
             _last_email_list = list_unread(max_results=8)
         match = _resolve_email_ref(ref, _last_email_list)
         if not match:
-            # Try searching
-            results = search_emails(ref, max_results=1)
-            match = results[0] if results else None
+            # Try searching both accounts
+            for acct in ["primary", "secondary"]:
+                results = search_emails(ref, max_results=1, account=acct)
+                if results:
+                    results[0].setdefault("account", "jynpriority@gmail.com" if acct == "primary" else "jngai5.3@gmail.com")
+                    match = results[0]
+                    break
         if not match:
             return f"Couldn't find an email matching '{ref}'. Try 'check unread' first."
-        full = get_email_body(match["id"])
+        acct = "secondary" if "jngai5.3" in match.get("account", "") else "primary"
+        full = get_email_body(match["id"], account=acct)
         if not full:
             return "⚠️ Couldn't retrieve that email."
         sender = full["from"].split("<")[0].strip() or full["from"]
@@ -210,12 +238,17 @@ def handle(message: str) -> str:
             _last_email_list = list_unread(max_results=8)
         match = _resolve_email_ref(ref, _last_email_list)
         if not match:
-            results = search_emails(ref, max_results=1)
-            match = results[0] if results else None
+            for acct in ["primary", "secondary"]:
+                results = search_emails(ref, max_results=1, account=acct)
+                if results:
+                    results[0].setdefault("account", "jynpriority@gmail.com" if acct == "primary" else "jngai5.3@gmail.com")
+                    match = results[0]
+                    break
         if not match:
             return f"Couldn't find email matching '{ref}'. Try 'check unread' first."
         # Get full email to get thread_id and sender
-        full = get_email_body(match["id"])
+        acct = "secondary" if "jngai5.3" in match.get("account", "") else "primary"
+        full = get_email_body(match["id"], account=acct)
         if not full:
             return "⚠️ Couldn't load that email to reply."
         to = full["from"]
@@ -224,14 +257,21 @@ def handle(message: str) -> str:
         # Draft the reply body
         reply_body = _draft_email_body(to, subject, body_request)
         sender = to.split("<")[0].strip() or to
-        # Show preview + confirm
+        # Persist state so "send it" can retrieve it
+        _save_draft_state({
+            "type": "reply",
+            "to": to,
+            "subject": subject,
+            "body": reply_body,
+            "thread_id": thread_id,
+            "account": acct,
+        })
         return (
             f"📝 *Reply draft:*\n\n"
             f"To: {sender}\n"
             f"Re: {subject}\n\n"
             f"{reply_body}\n\n"
-            f"_Reply 'send it' to send, or tell me what to change_\n"
-            f"_thread:{thread_id}|to:{to}|subj:{subject}_"
+            f"_Reply 'send it' to send, or tell me what to change_"
         )
 
     # ── Draft / Send ─────────────────────────────────────────────────────────
@@ -243,7 +283,25 @@ def handle(message: str) -> str:
 
         # Handle "send it" confirmation from previous draft/reply
         if "send it" in message.lower():
-            return "Which draft should I send? Reply with a recipient or paste the draft."
+            state = _load_draft_state()
+            if not state:
+                return "No draft found to send. Draft an email first, then reply 'send it'."
+            if state.get("type") == "reply":
+                success = reply_to_email(
+                    state["thread_id"], state["to"], state["subject"], state["body"],
+                    account=state.get("account", "primary")
+                )
+            else:
+                success = send_email(state["to"], state["subject"], state["body"])
+            if success:
+                _DRAFT_STATE_PATH.unlink(missing_ok=True)
+                return (
+                    f"✅ *Sent!*\n\n"
+                    f"To: {state['to']}\n"
+                    f"Subject: {state['subject']}\n\n"
+                    f"_{state['body'][:200]}{'...' if len(state['body']) > 200 else ''}_"
+                )
+            return "⚠️ Failed to send. Check Gmail permissions."
 
         if not to:
             return "Who should I send this to? (name or email address)"
@@ -269,6 +327,8 @@ def handle(message: str) -> str:
         else:
             draft = create_draft(to if "@" in to else "", subject, body)
             draft_note = "_Draft saved to Gmail_" if draft else "_Could not save draft (no email address)_"
+            # Persist state so "send it" can retrieve it
+            _save_draft_state({"type": "draft", "to": to, "subject": subject, "body": body})
             return (
                 f"📝 *Draft ready:*\n\n"
                 f"To: {to}\n"
