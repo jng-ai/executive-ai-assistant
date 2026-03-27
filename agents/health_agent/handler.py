@@ -32,9 +32,12 @@ Justin's targets:
 """
 
 import json
+import logging
 import datetime
 from core.llm import chat
 from core.memory import log_health, get_health_summary
+
+logger = logging.getLogger(__name__)
 
 # ── Targets ───────────────────────────────────────────────────────────────────
 
@@ -286,18 +289,22 @@ def _what_to_eat(message: str) -> str:
 
 _ROTATION = ["push", "pull", "legs", "swim"]
 
-_PUSH_KW  = ["push", "chest", "shoulder", "tricep", "bench", "press", "delt", "overhead"]
+# "press" removed from push — "leg press" contains it and should resolve to legs (via "leg")
+# "rdl" removed from legs — "romanian deadlift RDL" should resolve to pull (via "deadlift")
+# "ran" added to swim — "ran 5 miles" is cardio, not strength
+_PUSH_KW  = ["push", "chest", "shoulder", "tricep", "bench", "delt", "overhead"]
 _PULL_KW  = ["pull", "back", "row", "deadlift", "bicep", "lat", "chin", "pullup", "pull-up", "rhomboid"]
-_LEGS_KW  = ["leg", "squat", "lunge", "hamstring", "quad", "glute", "calf", "rdl", "hip thrust"]
-_SWIM_KW  = ["swim", "pool", "cardio", "run", "bike", "cycle", "endurance", "hiit", "sprint"]
+_LEGS_KW  = ["leg", "squat", "lunge", "hamstring", "quad", "glute", "calf", "hip thrust"]
+_SWIM_KW  = ["swim", "pool", "cardio", "run", "ran", "bike", "cycle", "endurance", "hiit", "sprint"]
 
 
 def _classify_workout_type(value: str) -> str | None:
     """Return 'push' | 'pull' | 'legs' | 'swim' from a workout log entry, or None."""
     v = value.lower()
+    # Check legs before push — "leg press" and "quad extensions leg press" resolve to legs
+    if any(k in v for k in _LEGS_KW):  return "legs"
     if any(k in v for k in _PUSH_KW):  return "push"
     if any(k in v for k in _PULL_KW):  return "pull"
-    if any(k in v for k in _LEGS_KW):  return "legs"
     if any(k in v for k in _SWIM_KW):  return "swim"
     return None
 

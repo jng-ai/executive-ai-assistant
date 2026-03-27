@@ -11,10 +11,24 @@ v2 additions:
 """
 
 import datetime
+import logging
 import re
 import json
 from core.llm import chat
 from integrations.google.auth import is_configured
+
+logger = logging.getLogger(__name__)
+
+# Module-level imports so tests can patch these symbols directly.
+# These will fail gracefully if Google credentials aren't configured.
+try:
+    from integrations.google.calendar_client import (
+        list_events, create_event, find_free_slots, format_events,
+        get_todays_events, delete_event, check_conflicts, get_events_for_date,
+    )
+except Exception:
+    list_events = create_event = find_free_slots = format_events = None  # type: ignore
+    get_todays_events = delete_event = check_conflicts = get_events_for_date = None  # type: ignore
 
 SYSTEM = """You are Justin Ngai's executive calendar assistant. You help schedule, manage, and optimize his time.
 
@@ -133,11 +147,6 @@ def handle(message: str) -> str:
             "⚠️ Google Calendar not connected yet.\n\n"
             "Run `python scripts/google_auth.py` to authorize."
         )
-
-    from integrations.google.calendar_client import (
-        list_events, create_event, find_free_slots, format_events,
-        get_todays_events, delete_event, check_conflicts, get_events_for_date
-    )
 
     parsed = _parse_request(message)
     action = parsed.get("action", "question")
@@ -312,7 +321,7 @@ def run_morning_briefing() -> str:
 
         return "\n".join(parts)
     except Exception as e:
-        print(f"Morning briefing error: {e}")
+        logger.warning("Morning briefing error: %s", e)
         return ""
 
 
@@ -382,7 +391,7 @@ def run_eod_calendar() -> str:
 
         return "\n\n".join(parts) if parts else ""
     except Exception as e:
-        print(f"EOD calendar error: {e}")
+        logger.warning("EOD calendar error: %s", e)
         return ""
 
 
