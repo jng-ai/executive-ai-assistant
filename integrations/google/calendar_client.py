@@ -3,9 +3,12 @@ Google Calendar client — create, list, and update calendar events.
 """
 
 import datetime
+import logging
 from zoneinfo import ZoneInfo
 from googleapiclient.discovery import build
 from integrations.google.auth import get_credentials, is_configured
+
+logger = logging.getLogger(__name__)
 
 _ET = ZoneInfo("America/New_York")
 
@@ -68,7 +71,7 @@ def list_events(days_ahead: int = 7) -> list[dict]:
         all_events.sort(key=sort_key)
         return all_events[:25]
     except Exception as e:
-        print(f"Calendar list error: {e}")
+        logger.error("Calendar list error: %s", e)
         return []
 
 
@@ -105,7 +108,7 @@ def create_event(title: str, start: str, end: str = None,
         created = svc.events().insert(calendarId="jynpriority@gmail.com", body=event).execute()
         return created
     except Exception as e:
-        print(f"Calendar create error: {e}")
+        logger.error("Calendar create error: %s", e)
         return None
 
 
@@ -149,7 +152,7 @@ def find_free_slots(date: str, duration_minutes: int = 60) -> list[str]:
                 free.append(f"{h % 12 or 12}{'am' if h < 12 else 'pm'}")
         return free[:5]
     except Exception as e:
-        print(f"Free slot error: {e}")
+        logger.error("Free slot error: %s", e)
         return []
 
 
@@ -177,7 +180,7 @@ def get_todays_events() -> list[dict]:
         all_events.sort(key=lambda ev: ev.get("start", {}).get("dateTime", ev.get("start", {}).get("date", "")))
         return all_events
     except Exception as e:
-        print(f"Today events error: {e}")
+        logger.error("Today events error: %s", e)
         return []
 
 
@@ -204,7 +207,7 @@ def get_events_for_date(date: datetime.date) -> list[dict]:
         all_events.sort(key=lambda ev: ev.get("start", {}).get("dateTime", ev.get("start", {}).get("date", "")))
         return all_events
     except Exception as e:
-        print(f"get_events_for_date error: {e}")
+        logger.error("get_events_for_date error: %s", e)
         return []
 
 
@@ -235,7 +238,7 @@ def delete_event(keyword: str) -> str:
             return f"🗑 Deleted: *{title}*"
         return f"⚠️ Couldn't delete '{title}' — may not have edit access."
     except Exception as e:
-        print(f"Delete event error: {e}")
+        logger.error("Delete event error: %s", e)
         return "⚠️ Error deleting event."
 
 
@@ -266,7 +269,7 @@ def check_conflicts(date: str, time: str, duration_minutes: int = 60) -> list[st
                 continue
         return conflicts
     except Exception as e:
-        print(f"Conflict check error: {e}")
+        logger.error("Conflict check error: %s", e)
         return []
 
 

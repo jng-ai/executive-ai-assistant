@@ -4,10 +4,13 @@ Gmail client — send, draft, and search emails.
 
 import base64
 import email as email_lib
+import logging
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from googleapiclient.discovery import build
 from integrations.google.auth import get_credentials, is_configured
+
+logger = logging.getLogger(__name__)
 
 
 def _service(account: str = "primary"):
@@ -103,7 +106,7 @@ def send_email(to: str, subject: str, body: str, html: bool = False) -> bool:
         svc.users().messages().send(userId="me", body={"raw": raw}).execute()
         return True
     except Exception as e:
-        print(f"Gmail send error: {e}")
+        logger.error("Gmail send error: %s", e)
         return False
 
 
@@ -122,7 +125,7 @@ def create_draft(to: str, subject: str, body: str) -> dict | None:
         ).execute()
         return draft
     except Exception as e:
-        print(f"Gmail draft error: {e}")
+        logger.error("Gmail draft error: %s", e)
         return None
 
 
@@ -152,7 +155,7 @@ def list_unread(max_results: int = 10, account: str = "primary") -> list[dict]:
             })
         return emails
     except Exception as e:
-        print(f"Gmail list error: {e}")
+        logger.error("Gmail list error: %s", e)
         return []
 
 
@@ -182,7 +185,7 @@ def search_emails(query: str, max_results: int = 5, account: str = "primary") ->
             })
         return emails
     except Exception as e:
-        print(f"Gmail search error: {e}")
+        logger.error("Gmail search error: %s", e)
         return []
 
 
@@ -206,7 +209,7 @@ def get_email_body(msg_id: str, account: str = "primary") -> dict:
             "thread_id": msg.get("threadId", ""),
         }
     except Exception as e:
-        print(f"Gmail get body error: {e}")
+        logger.error("Gmail get body error: %s", e)
         return {}
 
 
@@ -241,7 +244,7 @@ def reply_to_email(thread_id: str, to: str, subject: str, body: str, account: st
         ).execute()
         return True
     except Exception as e:
-        print(f"Gmail reply error: {e}")
+        logger.error("Gmail reply error: %s", e)
         return False
 
 

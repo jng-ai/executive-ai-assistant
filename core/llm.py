@@ -11,8 +11,11 @@ Set in .env:
   LLM_MODEL=llama-3.1-70b-versatile
 """
 
+import logging
 import os
 from openai import OpenAI
+
+logger = logging.getLogger(__name__)
 
 
 def get_client():

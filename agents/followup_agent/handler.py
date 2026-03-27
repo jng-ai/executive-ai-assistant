@@ -15,9 +15,12 @@ When the follow-up fires (via scheduler):
 
 import datetime
 import json
+import logging
 import re
 from core.llm import chat
 from core.followups import add_followup, list_all_pending, cancel_followup, mark_done
+
+logger = logging.getLogger(__name__)
 
 SYSTEM = """You are Justin Ngai's follow-up assistant. You help him remember to circle back with people via email or meeting.
 

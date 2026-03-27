@@ -11,10 +11,13 @@ v2 additions:
 """
 
 import json
+import logging
 import os
 from pathlib import Path
 from core.llm import chat
 from integrations.google.auth import is_configured
+
+logger = logging.getLogger(__name__)
 
 _DRAFT_STATE_PATH = Path(__file__).parent.parent.parent / "data" / "email_draft_state.json"
 
@@ -396,7 +399,7 @@ def run_morning_digest() -> str:
         lines.append("\n_Reply 'check email' to open inbox_")
         return "\n".join(lines)
     except Exception as e:
-        print(f"Morning email digest error: {e}")
+        logger.warning("Morning email digest error: %s", e)
         return ""
 
 
@@ -443,7 +446,7 @@ def run_eod_email_summary() -> str:
 
         return "\n".join(lines)
     except Exception as e:
-        print(f"EOD email summary error: {e}")
+        logger.warning("EOD email summary error: %s", e)
         return ""
 
 
@@ -564,5 +567,5 @@ def scan_and_triage_confirmations() -> str:
         return "\n".join(lines)
 
     except Exception as e:
-        print(f"Confirmation scan error: {e}")
+        logger.warning("Confirmation scan error: %s", e)
         return ""

@@ -5,8 +5,11 @@ The scheduler checks each morning and fires when due.
 """
 
 import json
+import logging
 import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 FOLLOWUPS_FILE = DATA_DIR / "followups.json"

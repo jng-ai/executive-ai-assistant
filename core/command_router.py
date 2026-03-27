@@ -3,7 +3,10 @@ Command Router — classifies incoming user messages and routes to the right age
 """
 
 import json
+import logging
 from core.llm import chat
+
+logger = logging.getLogger(__name__)
 
 ROUTER_PROMPT = """You are a message classifier. Classify the user's message into one of these intent types:
 
@@ -44,4 +47,5 @@ def classify(message: str) -> dict:
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
+        logger.debug("Router JSON parse failed for message: %s", message[:80])
         return {"intent": "general_question", "details": message, "params": {}}

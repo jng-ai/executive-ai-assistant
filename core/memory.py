@@ -5,9 +5,12 @@ Notion is synced in the background when configured.
 """
 
 import json
+import logging
 import os
 import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 TASKS_FILE  = DATA_DIR / "tasks.json"

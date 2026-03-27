@@ -9,6 +9,7 @@ Sources (no API key required):
 - Comparison vs "Historical Normal SUB" in CC Tracker Google Sheet
 """
 
+import logging
 import os
 import re
 import json
@@ -16,6 +17,8 @@ import datetime
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from core.llm import chat
+
+logger = logging.getLogger(__name__)
 
 try:
     import requests as _requests
@@ -121,7 +124,7 @@ def _fetch_rss(url: str, source_name: str) -> list[dict]:
             items.append({"title": title, "summary": desc, "link": link, "source": source_name})
         return items[:20]
     except Exception as e:
-        print(f"RSS fetch error ({source_name}): {e}")
+        logger.error("RSS fetch error (%s): %s", source_name, e)
         return []
 
 
@@ -146,7 +149,7 @@ def _fetch_reddit(url: str, source_name: str) -> list[dict]:
                 items.append({"title": title, "summary": selftext, "link": link, "source": source_name})
         return items
     except Exception as e:
-        print(f"Reddit fetch error ({source_name}): {e}")
+        logger.error("Reddit fetch error (%s): %s", source_name, e)
         return []
 
 
@@ -179,7 +182,7 @@ def _get_historical_baselines() -> dict:
                     baselines[card_name.lower()] = int(nums[0])
         return baselines
     except Exception as e:
-        print(f"Error reading baselines: {e}")
+        logger.error("Error reading baselines: %s", e)
         return {}
 
 
@@ -271,7 +274,7 @@ def _analyze_posts_for_elevated(posts: list[dict]) -> list[dict]:
 def _send_telegram_alert(message: str):
     """Send a Telegram message directly via Bot API."""
     if not _requests or not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print(f"[Bonus Alert] Would send: {message[:100]}")
+        logger.debug("[Bonus Alert] Would send: %s", message[:100])
         return
     try:
         _requests.post(
@@ -284,7 +287,7 @@ def _send_telegram_alert(message: str):
             timeout=10,
         )
     except Exception as e:
-        print(f"Telegram send error: {e}")
+        logger.error("Telegram send error: %s", e)
 
 
 def _format_alert(offers: list[dict], baselines: dict) -> str | None:
@@ -341,7 +344,7 @@ def run_bonus_scan(force: bool = False) -> str:
     Returns a summary string (for Telegram command response).
     Call with force=True to always report, even if already alerted today.
     """
-    print(f"[Bonus Alert] Starting scan at {datetime.datetime.now()}")
+    logger.info("[Bonus Alert] Starting scan at %s", datetime.datetime.now())
 
     last_alerts = _load_last_alerts()
     today = datetime.date.today().isoformat()
@@ -352,18 +355,18 @@ def run_bonus_scan(force: bool = False) -> str:
 
     # Fetch posts from all sources
     posts = _fetch_all_posts()
-    print(f"[Bonus Alert] Fetched {len(posts)} posts")
+    logger.info("[Bonus Alert] Fetched %d posts", len(posts))
 
     if not posts:
         return "⚠️ Couldn't fetch bonus sources. Check internet connection."
 
     # Get historical baselines from sheet
     baselines = _get_historical_baselines()
-    print(f"[Bonus Alert] Got {len(baselines)} baseline values from sheet")
+    logger.info("[Bonus Alert] Got %d baseline values from sheet", len(baselines))
 
     # LLM analysis
     elevated_offers = _analyze_posts_for_elevated(posts)
-    print(f"[Bonus Alert] Found {len(elevated_offers)} elevated offers")
+    logger.info("[Bonus Alert] Found %d elevated offers", len(elevated_offers))
 
     # Update scan timestamp
     last_alerts["last_scan"] = today
