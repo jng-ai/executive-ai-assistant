@@ -348,6 +348,68 @@ async def dashboard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.warning(f"Dashboard edit failed: {e}")
 
 
+async def origin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /origin [refresh|status]
+    - /origin refresh — pull live data from Chrome CDP session
+    - /origin status  — show snapshot age + key metrics
+    - /origin         — same as status
+    """
+    from integrations.origin.scraper import (
+        refresh_from_chrome, load_snapshot, snapshot_age_hours, get_finance_context, is_configured
+    )
+
+    args = (context.args or [])
+    sub = args[0].lower() if args else "status"
+
+    if sub == "refresh":
+        await update.message.reply_text("🔄 Connecting to Chrome and pulling Origin data...")
+        snap = await asyncio.to_thread(refresh_from_chrome)
+
+        if not snap or "error" in snap:
+            err = snap.get("error", "unknown error") if snap else "no data returned"
+            await update.message.reply_text(
+                f"❌ *Origin refresh failed*\n`{err}`\n\n"
+                "_Make sure Chrome is running with `--remote-debugging-port=9222`\n"
+                "Run: `scripts/start_chrome_cdp.sh`_",
+                parse_mode="Markdown",
+            )
+            return
+
+        age = snapshot_age_hours()
+        age_str = f"{age:.0f}m ago" if age is not None and age < 1 else (f"{age:.1f}h ago" if age else "just now")
+        ctx = get_finance_context()
+        preview = ctx[:600] if ctx else "_No structured data extracted._"
+        await update.message.reply_text(
+            f"✅ *Origin refreshed* ({age_str})\n\n{preview}",
+            parse_mode="Markdown",
+        )
+
+    else:  # status
+        snap = load_snapshot()
+        if not snap:
+            await update.message.reply_text(
+                "📊 *Origin Financial*\n\nNo snapshot yet.\n\n"
+                "Run `/origin refresh` after launching Chrome with CDP:\n"
+                "`scripts/start_chrome_cdp.sh`",
+                parse_mode="Markdown",
+            )
+            return
+
+        age = snapshot_age_hours()
+        age_str = f"{age:.0f}h ago" if age is not None else "unknown"
+        pages = [k.replace("_text", "") for k in snap if k.endswith("_text")]
+        scraped_at = snap.get("_scraped_at", "?")[:19]
+        await update.message.reply_text(
+            f"📊 *Origin Financial Snapshot*\n"
+            f"Last synced: `{scraped_at}` ({age_str})\n"
+            f"Pages captured: {', '.join(pages)}\n\n"
+            "_Use `/origin refresh` to pull fresh data._\n"
+            "_Ask 'budget summary' or 'finance review' to use this data._",
+            parse_mode="Markdown",
+        )
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     await update.message.reply_text(
@@ -374,16 +436,19 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _scheduled_origin_refresh(context: ContextTypes.DEFAULT_TYPE):
     """Daily Origin Financial data refresh — runs at 8:15 AM ET.
-    Scrapes budget, spending, investments, equity, and credit score from Origin.
+    Tries Chrome CDP first (no credentials needed), falls back to headless login.
     Sends a brief alert if budget is significantly over target.
     """
     try:
-        from integrations.origin.scraper import scrape, is_configured, load_snapshot
-        if not is_configured():
-            return
+        from integrations.origin.scraper import refresh_from_chrome, scrape, is_configured, load_snapshot
 
-        await asyncio.to_thread(scrape)
-        snap = load_snapshot()
+        snap = await asyncio.to_thread(refresh_from_chrome)
+        if not snap or "error" in snap:
+            # Chrome not available — fall back to headless login
+            if is_configured():
+                logger.info("Origin: CDP unavailable, falling back to headless login")
+                await asyncio.to_thread(scrape)
+            snap = load_snapshot()
 
         # Check for budget overrun — alert if over 120%
         text = snap.get("dashboard_text", "")
@@ -588,6 +653,7 @@ def run_bot():
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("dashboard", dashboard_command))
+    app.add_handler(CommandHandler("origin", origin_command))
     app.add_handler(CallbackQueryHandler(dashboard_callback, pattern=r"^dash:"))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))

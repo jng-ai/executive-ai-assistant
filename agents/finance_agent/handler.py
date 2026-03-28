@@ -1073,6 +1073,52 @@ If cannot parse: {"type": null}"""
     )
 
 
+def _origin_refresh() -> str:
+    """Pull live data from Chrome CDP session and return a status message."""
+    try:
+        from integrations.origin.scraper import refresh_from_chrome, snapshot_age_hours, get_finance_context
+        snap = refresh_from_chrome()
+        if not snap or "error" in snap:
+            err = snap.get("error", "no data") if snap else "no data"
+            return (
+                "❌ *Origin refresh failed*\n"
+                f"`{err}`\n\n"
+                "_Make sure Chrome is running with CDP enabled.\n"
+                "Run: `scripts/start_chrome_cdp.sh`_"
+            )
+        age = snapshot_age_hours()
+        age_str = "just now" if not age or age < 0.1 else f"{age*60:.0f}m ago"
+        ctx = get_finance_context()
+        preview = ctx[:500] if ctx else "_No structured data extracted._"
+        return f"✅ *Origin refreshed* ({age_str})\n\n{preview}"
+    except Exception as e:
+        return f"❌ Origin refresh error: {e}"
+
+
+def _origin_status() -> str:
+    """Return snapshot age + key metrics without triggering a new scrape."""
+    try:
+        from integrations.origin.scraper import load_snapshot, snapshot_age_hours, get_finance_context
+        snap = load_snapshot()
+        if not snap:
+            return (
+                "📊 *Origin Financial*\n\nNo snapshot on file.\n\n"
+                "_Say 'origin refresh' to pull data from Chrome._"
+            )
+        age = snapshot_age_hours()
+        age_str = f"{age:.0f}h ago" if age is not None else "unknown"
+        scraped_at = snap.get("_scraped_at", "?")[:19]
+        ctx = get_finance_context()
+        preview = ctx[:600] if ctx else "_No structured data extracted._"
+        return (
+            f"📊 *Origin Financial* (synced {age_str}, `{scraped_at}`)\n\n"
+            f"{preview}\n\n"
+            "_Say 'origin refresh' to pull fresh data._"
+        )
+    except Exception as e:
+        return f"❌ Origin status error: {e}"
+
+
 def _origin_finance_context() -> str:
     """Pull live Origin Financial budget/spending data as context string."""
     try:
@@ -1137,6 +1183,14 @@ def handle(message: str) -> str:
     query    = parsed.get("query", message)
     card     = parsed.get("card_or_bank")
     idea     = parsed.get("idea")
+
+    # Origin Financial shortcuts
+    msg_lower = message.lower()
+    if any(w in msg_lower for w in ["origin refresh", "refresh origin", "sync origin", "origin sync"]):
+        return _origin_refresh()
+    if any(w in msg_lower for w in ["origin status", "origin data", "origin snapshot", "origin balance",
+                                     "origin budget", "show origin", "what does origin say"]):
+        return _origin_status()
 
     # Side hustle list shortcut
     if any(w in message.lower() for w in ["my side hustles", "side hustle list", "show my ideas"]):
