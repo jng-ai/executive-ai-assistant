@@ -1086,7 +1086,7 @@ If cannot parse: {"type": null}"""
 def _parse_origin_structured() -> dict:
     """
     Parse raw Origin page text into clean structured metrics.
-    Returns dict with net_worth, budget, spending, investments, equity keys.
+    Origin outputs label on one line, value on the next — handle accordingly.
     """
     try:
         from integrations.origin.scraper import load_snapshot
@@ -1097,38 +1097,88 @@ def _parse_origin_structured() -> dict:
         return {}
 
     result = {}
-
-    # ── Net worth ──────────────────────────────────────────────────────────────
     dash = snap.get("dashboard_text", "")
-    for line in dash.split("\n"):
-        line = line.strip()
-        if not line:
+    lines = [l.strip() for l in dash.split("\n")]
+
+    # ── Net worth — find $XK values in the forecast block near "NET WORTH" ────
+    # Origin shows forecast Y-axis as $945K/$952K/$959K/$966K/$973K — take the max (current/end value)
+    for i, line in enumerate(lines):
+        if "NET WORTH" in line.upper():
+            nw_candidates = []
+            for j in range(i, min(i + 20, len(lines))):
+                if re.match(r"^\$\d[\d,\.]*[KMB]$", lines[j]):  # must end with K/M/B
+                    nw_candidates.append(lines[j])
+            if nw_candidates:
+                result["net_worth"] = nw_candidates[-1]  # last in forecast range = highest/current
+            break
+
+    # Net worth change
+    for line in lines:
+        if re.match(r"^[+\-]\$[\d,\.]+ \([\d\.]+%\)$", line):
+            result["net_worth_change"] = line
+            break
+
+    # ── Budget ────────────────────────────────────────────────────────────────
+    for i, line in enumerate(lines):
+        if "BUDGET IN" in line.upper():
+            block = lines[i:i+10]
+            result["budget_spent"] = next((l for l in block if re.match(r"^\$[\d,]+$", l)), None)
+            result["budget_target"] = next((l for l in block if l.startswith("of $")), None)
+            result["budget_pct"] = next((l for l in block if re.match(r"^\d+\.?\d*%$", l)), None)
+            break
+
+    # Spent in month
+    for i, line in enumerate(lines):
+        if "SPENT IN" in line.upper():
+            for j in range(i+1, min(i+3, len(lines))):
+                if re.match(r"^\$[\d,]+$", lines[j]):
+                    result["spent_month"] = lines[j]
+                    break
+            break
+
+    # ── Credit score ──────────────────────────────────────────────────────────
+    for i, line in enumerate(lines):
+        if "CREDIT SCORE" in line.upper():
+            for j in range(i+1, min(i+4, len(lines))):
+                if re.match(r"^\d{3}$", lines[j]):
+                    result["credit_score"] = lines[j]
+                    break
+            break
+
+    # ── Investments (from dashboard) ──────────────────────────────────────────
+    for i, line in enumerate(lines):
+        if line.upper() == "INVESTMENTS":
+            for j in range(i+1, min(i+3, len(lines))):
+                if re.match(r"^\$[\d,]+$", lines[j]):
+                    result["investments_value"] = lines[j]
+                    break
+            break
+
+    # ── Market watch ──────────────────────────────────────────────────────────
+    market_lines = []
+    in_market = False
+    for line in lines:
+        if "MARKET WATCH" in line.upper():
+            in_market = True
             continue
-        l = line.lower()
-        if "net worth" in l and "$" in line:
-            result["net_worth_line"] = line
-        if ("budget" in l or "spent" in l) and ("%" in line or "$" in line):
-            result.setdefault("budget_lines", []).append(line)
-        if "credit score" in l or "score" in l and any(c.isdigit() for c in line):
-            result["credit_score_line"] = line
+        if in_market:
+            if line and len(line) > 2:
+                market_lines.append(line)
+            if len(market_lines) >= 8:
+                break
+    result["market_lines"] = market_lines
 
     # ── Spending categories ────────────────────────────────────────────────────
-    spending = snap.get("spending_text", "") + snap.get("spending_breakdown_text", "")
-    spending_lines = []
-    for line in spending.split("\n"):
-        line = line.strip()
-        if line and ("$" in line or "%" in line) and len(line) > 3:
-            spending_lines.append(line)
+    spending = snap.get("spending_text", "") + "\n" + snap.get("spending_breakdown_text", "")
+    spending_lines = [l.strip() for l in spending.split("\n")
+                      if l.strip() and ("$" in l or "%" in l) and len(l.strip()) > 2]
     result["spending_lines"] = spending_lines[:30]
 
-    # ── Investments ────────────────────────────────────────────────────────────
+    # ── Investments detail ────────────────────────────────────────────────────
     invest = snap.get("investments_text", "")
-    invest_lines = []
-    for line in invest.split("\n"):
-        line = line.strip()
-        if line and ("$" in line or "%" in line or any(kw in line.lower() for kw in
-                     ["401", "ira", "brokerage", "stock", "bond", "etf", "fund", "allocation"])):
-            invest_lines.append(line)
+    invest_lines = [l.strip() for l in invest.split("\n")
+                    if l.strip() and ("$" in l or "%" in l or any(
+                        kw in l.lower() for kw in ["401", "ira", "brokerage", "etf", "fund", "allocation"]))]
     result["investment_lines"] = invest_lines[:30]
 
     # ── Equity / RSU ──────────────────────────────────────────────────────────
@@ -1139,8 +1189,7 @@ def _parse_origin_structured() -> dict:
 
     # ── Forecast ──────────────────────────────────────────────────────────────
     forecast = snap.get("forecast_text", "")
-    forecast_lines = [l.strip() for l in forecast.split("\n")
-                      if l.strip() and len(l.strip()) > 5]
+    forecast_lines = [l.strip() for l in forecast.split("\n") if l.strip() and len(l.strip()) > 5]
     result["forecast_lines"] = forecast_lines[:15]
 
     result["_scraped_at"] = snap.get("_scraped_at", "unknown")
@@ -1233,11 +1282,13 @@ def _financial_intelligence_report(trigger: str = "on_demand") -> str:
     if origin:
         origin_section = f"""
 Origin Financial data (scraped {origin.get('_scraped_at', '?')[:10]}):
-Net worth: {origin.get('net_worth_line', 'not found')}
-Credit: {origin.get('credit_score_line', 'not found')}
-Budget lines: {'; '.join(origin.get('budget_lines', [])[:6])}
-Spending: {'; '.join(origin.get('spending_lines', [])[:15])}
-Investments: {'; '.join(origin.get('investment_lines', [])[:10])}
+Net worth: {origin.get('net_worth', 'not found')} (change: {origin.get('net_worth_change', '?')})
+Credit score: {origin.get('credit_score', '?')}
+Investments portfolio: {origin.get('investments_value', '?')}
+Spent this month: {origin.get('spent_month', '?')} vs budget target {origin.get('budget_target', '?')} ({origin.get('budget_pct', '?')} of budget)
+Market: {'; '.join(origin.get('market_lines', [])[:6])}
+Spending detail: {'; '.join(origin.get('spending_lines', [])[:15])}
+Investment detail: {'; '.join(origin.get('investment_lines', [])[:10])}
 Equity/RSU: {'; '.join(origin.get('equity_lines', [])[:8])}
 Forecast: {'; '.join(origin.get('forecast_lines', [])[:6])}
 """
