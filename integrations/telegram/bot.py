@@ -17,7 +17,7 @@ from agents.infusion_agent.handler import handle as infusion_handle
 from agents.mortgage_note_agent.handler import handle as mortgage_handle
 from agents.investment_agent.handler import handle as investment_handle
 from agents.travel_agent.handler import handle as travel_handle
-from agents.health_agent.handler import handle as health_handle, run_daily_nudge
+from agents.health_agent.handler import handle as health_handle, run_daily_nudge, run_lunch_nudge, run_dinner_nudge, run_breakfast_nudge
 from agents.social_agent.handler import handle as social_handle, run_event_scan
 from agents.finance_agent.handler import handle as finance_handle
 from agents.bonus_alert.handler import handle as bonus_alert_handle, run_bonus_scan
@@ -811,6 +811,48 @@ async def _scheduled_health_nudge(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Health nudge error: {e}")
 
 
+async def _scheduled_breakfast_nudge(context: ContextTypes.DEFAULT_TYPE):
+    """9:30 AM ET — nudge if breakfast not logged yet."""
+    try:
+        msg = await asyncio.to_thread(run_breakfast_nudge)
+        if msg:
+            await context.bot.send_message(
+                chat_id=os.environ["TELEGRAM_CHAT_ID"],
+                text=msg,
+                parse_mode="Markdown",
+            )
+    except Exception as e:
+        logger.warning("Breakfast nudge error: %s", e)
+
+
+async def _scheduled_lunch_nudge(context: ContextTypes.DEFAULT_TYPE):
+    """12:30 PM ET — nudge if lunch not logged yet."""
+    try:
+        msg = await asyncio.to_thread(run_lunch_nudge)
+        if msg:
+            await context.bot.send_message(
+                chat_id=os.environ["TELEGRAM_CHAT_ID"],
+                text=msg,
+                parse_mode="Markdown",
+            )
+    except Exception as e:
+        logger.warning("Lunch nudge error: %s", e)
+
+
+async def _scheduled_dinner_nudge(context: ContextTypes.DEFAULT_TYPE):
+    """7:30 PM ET — nudge if dinner not logged yet."""
+    try:
+        msg = await asyncio.to_thread(run_dinner_nudge)
+        if msg:
+            await context.bot.send_message(
+                chat_id=os.environ["TELEGRAM_CHAT_ID"],
+                text=msg,
+                parse_mode="Markdown",
+            )
+    except Exception as e:
+        logger.warning("Dinner nudge error: %s", e)
+
+
 async def _scheduled_eod_wrapup(context: ContextTypes.DEFAULT_TYPE):
     """Daily 6 PM ET — combined calendar + email end-of-day wrap-up."""
     try:
@@ -959,6 +1001,30 @@ def run_bot():
             name="daily_health_nudge",
         )
         logger.info("Scheduled daily health nudge at 7:30 AM ET")
+
+        # Breakfast nudge — 9:30 AM ET (silent if already logged)
+        job_queue.run_daily(
+            _scheduled_breakfast_nudge,
+            time=dt.time(9, 30, 0, tzinfo=ET),
+            name="breakfast_nudge",
+        )
+        logger.info("Scheduled breakfast nudge at 9:30 AM ET")
+
+        # Lunch nudge — 12:30 PM ET (silent if already logged)
+        job_queue.run_daily(
+            _scheduled_lunch_nudge,
+            time=dt.time(12, 30, 0, tzinfo=ET),
+            name="lunch_nudge",
+        )
+        logger.info("Scheduled lunch nudge at 12:30 PM ET")
+
+        # Dinner nudge — 7:30 PM ET (silent if already logged)
+        job_queue.run_daily(
+            _scheduled_dinner_nudge,
+            time=dt.time(19, 30, 0, tzinfo=ET),
+            name="dinner_nudge",
+        )
+        logger.info("Scheduled dinner nudge at 7:30 PM ET")
 
         # EOD wrap-up — 6 PM ET daily (calendar + email combined, silent if clean)
         job_queue.run_daily(

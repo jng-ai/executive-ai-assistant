@@ -706,3 +706,86 @@ def run_daily_nudge() -> str:
     footer = f"\n🍳 *Today's meal idea:* {meal_tip.strip()}"
 
     return f"{header}\n{body}{footer}"
+
+
+# ── Proactive meal nudges (called by APScheduler) ─────────────────────────────
+
+def run_meal_nudge(meal: str) -> str:
+    """
+    Check if a meal has been logged in the relevant time window today.
+    Returns a nudge string if nothing logged, empty string if already logged (stay silent).
+
+    meal: "breakfast" (called ~9:30 AM ET), "lunch" (called ~12:30 PM ET), or "dinner" (called ~7:30 PM ET)
+    """
+    try:
+        import datetime
+        try:
+            from zoneinfo import ZoneInfo
+            now = datetime.datetime.now(tz=ZoneInfo("America/New_York"))
+        except Exception:
+            now = datetime.datetime.now(tz=datetime.timezone(datetime.timedelta(hours=-4)))
+
+        today = now.date().isoformat()
+        today_logs = get_health_summary(1)
+
+        # Find meals logged today with a timestamp in the relevant window
+        if meal == "breakfast":
+            window_start_hour = 5    # 5am ET
+        elif meal == "lunch":
+            window_start_hour = 10   # 10am ET
+        else:  # dinner
+            window_start_hour = 16   # 4pm ET
+
+        meal_in_window = False
+        for log in today_logs:
+            if log.get("metric") != "meal":
+                continue
+            if log.get("date") != today:
+                continue
+            # Check timestamp if available
+            ts_str = log.get("timestamp", "")
+            if ts_str:
+                try:
+                    ts = datetime.datetime.fromisoformat(ts_str)
+                    # Make timezone-naive comparison if needed
+                    ts_hour = ts.hour
+                    if ts_hour >= window_start_hour:
+                        meal_in_window = True
+                        break
+                except Exception:
+                    # If timestamp is unparseable, count it as logged
+                    meal_in_window = True
+                    break
+            else:
+                # No timestamp — just count it
+                meal_in_window = True
+                break
+
+        if meal_in_window:
+            return ""  # Already logged — stay silent
+
+        emoji = "🍳" if meal == "breakfast" else "🥗" if meal == "lunch" else "🍽"
+        return (
+            f"{emoji} *{meal.capitalize()} check-in*\n\n"
+            f"Haven't seen {meal} logged yet — did you eat?\n\n"
+            f"📸 Snap a photo or type what you had.\n"
+            f"_e.g. 'had a chicken sandwich for lunch'_"
+        )
+    except Exception as e:
+        logger.warning("Meal nudge error: %s", e)
+        return ""
+
+
+def run_lunch_nudge() -> str:
+    """Proactive 12:30 PM lunch check-in. Silent if already logged."""
+    return run_meal_nudge("lunch")
+
+
+def run_dinner_nudge() -> str:
+    """Proactive 7:30 PM dinner check-in. Silent if already logged."""
+    return run_meal_nudge("dinner")
+
+
+def run_breakfast_nudge() -> str:
+    """Proactive 9:30 AM breakfast check-in. Silent if already logged."""
+    return run_meal_nudge("breakfast")
