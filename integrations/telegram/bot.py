@@ -11,6 +11,7 @@ import tempfile
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
 from core.command_router import classify
+from core.conversation import add_turn, format_context
 from core.memory import add_task, log_health, list_tasks
 from agents.infusion_agent.handler import handle as infusion_handle
 from agents.mortgage_note_agent.handler import handle as mortgage_handle
@@ -607,12 +608,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(response, parse_mode="Markdown")
             return
 
-    classified = classify(text)
+    # Include recent history so the classifier resolves pronouns like
+    # "cancel that", "send it to him", "reschedule for Friday"
+    ctx = format_context(n=3)
+    classified = classify(text, context=ctx)
     intent = classified.get("intent", "general_question")
     details = classified.get("details", text)
     params = classified.get("params", {})
 
     response = await dispatch(intent, details, params, text)
+
+    # Record this turn so future messages have context
+    add_turn(text, response, agent=intent)
 
     # Telegram has 4096 char limit — split if needed
     if len(response) > 4000:

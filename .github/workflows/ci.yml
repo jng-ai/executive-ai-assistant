@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install runtime dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Install Playwright (headless Chromium for scraper tests)
+        run: playwright install chromium --with-deps
+        continue-on-error: true  # Don't fail CI if Playwright install has issues
+
+      - name: Run tests with coverage
+        env:
+          # Provide stub env vars so modules can import without real credentials
+          TELEGRAM_BOT_TOKEN: "test-token"
+          GROQ_API_KEY: "test-groq-key"
+          LLM_PROVIDER: "groq"
+          GOOGLE_CLIENT_ID: "test-client-id"
+          GOOGLE_CLIENT_SECRET: "test-client-secret"
+          GOOGLE_REFRESH_TOKEN: "test-refresh-token"
+          GOOGLE_REFRESH_TOKEN_JNGAI53: "test-refresh-token-secondary"
+          TAVILY_API_KEY: "test-tavily-key"
+          NOTION_TOKEN: ""
+          ORIGIN_EMAIL: "test@test.com"
+          ORIGIN_PASSWORD: "test-password"
+        run: |
+          pytest tests/ \
+            --cov=core \
+            --cov=agents \
+            --cov=integrations/google/auth \
+            --cov=integrations/telegram/dashboard \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-report=html:htmlcov \
+            --cov-fail-under=75 \
+            -v \
+            --tb=short
+
+      - name: Upload coverage XML (for PR annotation)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-xml
+          path: coverage.xml
+
+      - name: Upload HTML coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-html
+          path: htmlcov/
+
+      - name: Coverage summary comment on PR
+        if: github.event_name == 'pull_request'
+        uses: py-cov-action/python-coverage-comment-action@v3
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COVERAGE_DATA_FILE: coverage.xml
+        continue-on-error: true  # Don't fail if comment posting fails

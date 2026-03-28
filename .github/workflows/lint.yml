@@ -1,0 +1,56 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint & Style
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install lint tools
+        run: pip install flake8 flake8-bugbear
+
+      - name: Flake8 — core/ and agents/
+        run: |
+          flake8 core/ agents/ \
+            --max-line-length=120 \
+            --extend-ignore=E203,W503,E501 \
+            --exclude=__pycache__ \
+            --statistics \
+            --count
+        continue-on-error: false
+
+      - name: Flake8 — integrations/ (warn only)
+        run: |
+          flake8 integrations/ \
+            --max-line-length=120 \
+            --extend-ignore=E203,W503,E501 \
+            --exclude=__pycache__ \
+            --statistics \
+            --count
+        continue-on-error: true  # Warn but don't block on integrations layer
+
+      - name: Check for debug prints in production code
+        run: |
+          # Fail if bare print() calls exist in non-test code
+          # (should use logging instead)
+          count=$(grep -rn "^[[:space:]]*print(" core/ agents/ --include="*.py" | \
+                  grep -v "# noqa" | wc -l)
+          echo "Bare print() calls found: $count"
+          if [ "$count" -gt "40" ]; then
+            echo "::warning::$count bare print() calls found — consider replacing with logging"
+          fi
+        continue-on-error: true

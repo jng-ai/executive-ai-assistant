@@ -8,6 +8,7 @@ Usage:
   python main.py test     → test the command router locally
 """
 
+import logging
 import sys
 import os
 from pathlib import Path
@@ -16,10 +17,35 @@ from dotenv import load_dotenv
 # Load .env from project root
 load_dotenv(Path(__file__).parent / ".env")
 
+
+def _setup_logging():
+    os.makedirs("logs", exist_ok=True)
+    fmt = "%(asctime)s %(levelname)-8s %(name)s — %(message)s"
+    logging.basicConfig(
+        level=logging.INFO,
+        format=fmt,
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler("logs/bot.log", encoding="utf-8"),
+        ]
+    )
+    # Silence noisy third-party loggers
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("telegram").setLevel(logging.WARNING)
+    logging.getLogger("googleapiclient").setLevel(logging.WARNING)
+
+
 def check_env():
     provider = os.environ.get("LLM_PROVIDER", "groq").lower()
     llm_key = {"groq": "GROQ_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}.get(provider)
-    required = ["TELEGRAM_BOT_TOKEN"] + ([llm_key] if llm_key else [])
+    required = [
+        "TELEGRAM_BOT_TOKEN",
+        "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
+        "GOOGLE_REFRESH_TOKEN",
+        "TAVILY_API_KEY",
+    ] + ([llm_key] if llm_key else [])
     missing = [k for k in required if not os.environ.get(k)]
     if missing:
         print(f"Missing required env vars: {', '.join(missing)}")
@@ -27,6 +53,7 @@ def check_env():
         sys.exit(1)
 
 def run_bot():
+    _setup_logging()
     check_env()
 
     # Ensure all Notion databases have correct columns (silent on failure)

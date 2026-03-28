@@ -4,10 +4,13 @@ Gmail client — send, draft, and search emails.
 
 import base64
 import email as email_lib
+import logging
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from googleapiclient.discovery import build
 from integrations.google.auth import get_credentials, is_configured
+
+logger = logging.getLogger(__name__)
 
 
 def _service(account: str = "primary"):
@@ -29,6 +32,40 @@ def is_confirmation_email(subject: str, snippet: str, sender: str) -> bool:
     """Return True if this email looks like an event/booking confirmation."""
     text = f"{subject} {snippet} {sender}".lower()
     return any(p in text for p in _CONFIRMATION_PATTERNS)
+
+
+def find_contact_emails(name: str) -> list[dict]:
+    """
+    Search both Gmail accounts for recent emails FROM `name` to find their email address.
+    Returns list of dicts: {email, display_name, recent_subject, found_in}.
+    Deduplicates by email address.
+    """
+    import re
+    contacts = []
+    seen = set()
+
+    for account, label in [("primary", "jynpriority@gmail.com"), ("secondary", "jngai5.3@gmail.com")]:
+        if not is_configured(account):
+            continue
+        try:
+            results = search_emails(f"from:{name}", max_results=5, account=account)
+            for e in results:
+                from_hdr = e.get("from", "")
+                m = re.search(r"<([^>]+)>", from_hdr)
+                email_addr = m.group(1).strip() if m else from_hdr.strip()
+                display = from_hdr.split("<")[0].strip().strip('"') or name
+                if "@" in email_addr and email_addr not in seen:
+                    seen.add(email_addr)
+                    contacts.append({
+                        "email": email_addr,
+                        "display_name": display,
+                        "recent_subject": e.get("subject", ""),
+                        "found_in": label,
+                    })
+        except Exception:
+            pass
+
+    return contacts
 
 
 def list_unread_all_accounts(max_results: int = 10) -> list[dict]:
@@ -67,13 +104,21 @@ def scan_confirmation_emails(max_results: int = 30) -> list[dict]:
     Scan both accounts for confirmation/RSVP emails from the last 7 days.
     Returns emails flagged as confirmations with is_confirmation=True.
     """
-    # Search last 7 days across both accounts (not just unread)
+    # Search last 14 days across both accounts (not just unread)
     results = []
+    query = (
+        "newer_than:14d "
+        "(subject:(confirmation OR confirmed OR \"you're registered\" OR reservation "
+        "OR booking OR ticket OR itinerary OR \"check-in\" OR \"boarding pass\") "
+        "OR from:(luma.com OR eventbrite.com OR partiful.com OR meetup.com "
+        "OR resy.com OR opentable.com OR tock.com OR united.com OR delta.com "
+        "OR aa.com OR marriott.com OR hilton.com OR airbnb.com))"
+    )
     for account, label in [("primary", "jynpriority@gmail.com"), ("secondary", "jngai5.3@gmail.com")]:
         if not is_configured(account):
             continue
         try:
-            emails = search_emails("newer_than:7d", max_results=max_results, account=account)
+            emails = search_emails(query, max_results=max_results, account=account)
             for e in emails:
                 e["account"] = label
             results.extend(emails)
@@ -103,7 +148,7 @@ def send_email(to: str, subject: str, body: str, html: bool = False) -> bool:
         svc.users().messages().send(userId="me", body={"raw": raw}).execute()
         return True
     except Exception as e:
-        print(f"Gmail send error: {e}")
+        logger.error("Gmail send error: %s", e)
         return False
 
 
@@ -122,7 +167,7 @@ def create_draft(to: str, subject: str, body: str) -> dict | None:
         ).execute()
         return draft
     except Exception as e:
-        print(f"Gmail draft error: {e}")
+        logger.error("Gmail draft error: %s", e)
         return None
 
 
@@ -152,7 +197,7 @@ def list_unread(max_results: int = 10, account: str = "primary") -> list[dict]:
             })
         return emails
     except Exception as e:
-        print(f"Gmail list error: {e}")
+        logger.error("Gmail list error: %s", e)
         return []
 
 
@@ -182,7 +227,7 @@ def search_emails(query: str, max_results: int = 5, account: str = "primary") ->
             })
         return emails
     except Exception as e:
-        print(f"Gmail search error: {e}")
+        logger.error("Gmail search error: %s", e)
         return []
 
 
@@ -206,7 +251,7 @@ def get_email_body(msg_id: str, account: str = "primary") -> dict:
             "thread_id": msg.get("threadId", ""),
         }
     except Exception as e:
-        print(f"Gmail get body error: {e}")
+        logger.error("Gmail get body error: %s", e)
         return {}
 
 
@@ -225,12 +270,12 @@ def _extract_body(payload: dict) -> str:
     return ""
 
 
-def reply_to_email(thread_id: str, to: str, subject: str, body: str) -> bool:
+def reply_to_email(thread_id: str, to: str, subject: str, body: str, account: str = "primary") -> bool:
     """Send a reply within an existing email thread."""
-    if not is_configured():
+    if not is_configured(account):
         return False
     try:
-        svc = _service()
+        svc = _service(account)
         msg = MIMEText(body, "plain")
         msg["To"] = to
         msg["Subject"] = f"Re: {subject}" if not subject.startswith("Re:") else subject
@@ -241,7 +286,7 @@ def reply_to_email(thread_id: str, to: str, subject: str, body: str) -> bool:
         ).execute()
         return True
     except Exception as e:
-        print(f"Gmail reply error: {e}")
+        logger.error("Gmail reply error: %s", e)
         return False
 
 

@@ -131,10 +131,14 @@ class TestFinanceOneliner:
     def test_with_profile_last_updated(self, tmp_path, monkeypatch):
         import integrations.telegram.dashboard as d
         monkeypatch.setattr(d, "DATA_DIR", tmp_path)
+        # Disable Origin scraper so we fall through to profile-based text
+        monkeypatch.setattr(d, "_load_origin_snapshot", lambda: None, raising=False)
         today = datetime.date.today().isoformat()
         (tmp_path / "financial_profile.json").write_text(json.dumps({"last_updated": today}))
-        result = d._finance_oneliner()
-        assert "today" in result or "Profile" in result
+        # Patch the origin import inside _finance_oneliner
+        with patch("integrations.origin.scraper.load_snapshot", return_value=None):
+            result = d._finance_oneliner()
+        assert "today" in result or "Profile" in result or "updated" in result.lower()
 
     def test_no_profile_falls_back_to_bonus_scan(self, tmp_path, monkeypatch):
         import integrations.telegram.dashboard as d

@@ -5,7 +5,10 @@ Get your free API key at: app.tavily.com
 All agents use this instead of calling search APIs directly.
 """
 
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 
 def search(query: str, max_results: int = 5) -> list[dict]:

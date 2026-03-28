@@ -7,9 +7,21 @@ weekly, monthly, or a specific ticker — and frames the response accordingly.
 """
 
 import datetime
+import logging
 import re
 from core.llm import chat
 from core.search import search, format_results
+
+logger = logging.getLogger(__name__)
+
+try:
+    from zoneinfo import ZoneInfo
+    _ET = ZoneInfo("America/New_York")
+    def _et_now():
+        return datetime.datetime.now(tz=_ET)
+except ImportError:
+    def _et_now():
+        return datetime.datetime.now(tz=datetime.timezone(datetime.timedelta(hours=-4)))
 
 SYSTEM = """You are a senior markets analyst with the rigor of a JP Morgan research desk and the
 conviction of a Jane Street prop trader. You advise Justin Ngai, a sophisticated retail investor.
@@ -34,8 +46,7 @@ Be precise and actionable. No disclaimers. No generic platitudes."""
 
 def _market_hours_context() -> dict:
     """Return current market session context based on ET time."""
-    et = datetime.timezone(datetime.timedelta(hours=-5))
-    now = datetime.datetime.now(tz=et)
+    now = _et_now()
     hour = now.hour
     weekday = now.weekday()  # 0=Mon, 6=Sun
 

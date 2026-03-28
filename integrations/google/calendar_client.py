@@ -3,8 +3,26 @@ Google Calendar client — create, list, and update calendar events.
 """
 
 import datetime
+import logging
+from zoneinfo import ZoneInfo
 from googleapiclient.discovery import build
 from integrations.google.auth import get_credentials, is_configured
+
+logger = logging.getLogger(__name__)
+
+_ET = ZoneInfo("America/New_York")
+
+
+def _et_now() -> datetime.datetime:
+    """Current time in ET (handles EDT/EST automatically)."""
+    return datetime.datetime.now(tz=_ET)
+
+
+def _et_day_window(date: datetime.date) -> tuple[str, str]:
+    """Return (start_iso, end_iso) for a full ET calendar day — correct for EDT or EST."""
+    start = datetime.datetime(date.year, date.month, date.day, 0, 0, 0, tzinfo=_ET)
+    end   = datetime.datetime(date.year, date.month, date.day, 23, 59, 59, tzinfo=_ET)
+    return start.isoformat(), end.isoformat()
 
 
 def _service():
@@ -53,12 +71,13 @@ def list_events(days_ahead: int = 7) -> list[dict]:
         all_events.sort(key=sort_key)
         return all_events[:25]
     except Exception as e:
-        print(f"Calendar list error: {e}")
+        logger.error("Calendar list error: %s", e)
         return []
 
 
 def create_event(title: str, start: str, end: str = None,
-                 description: str = "", location: str = "") -> dict | None:
+                 description: str = "", location: str = "",
+                 attendees: list[str] | None = None) -> dict | None:
     """
     Create a calendar event.
     start/end: ISO format strings like '2026-03-17T19:00:00' or '2026-03-17' for all-day.
@@ -87,10 +106,16 @@ def create_event(title: str, start: str, end: str = None,
             "start": start_obj,
             "end": end_obj,
         }
-        created = svc.events().insert(calendarId="jynpriority@gmail.com", body=event).execute()
+        if attendees:
+            event["attendees"] = [{"email": a} for a in attendees]
+        created = svc.events().insert(
+            calendarId="jynpriority@gmail.com",
+            body=event,
+            sendUpdates="all",
+        ).execute()
         return created
     except Exception as e:
-        print(f"Calendar create error: {e}")
+        logger.error("Calendar create error: %s", e)
         return None
 
 
@@ -134,19 +159,18 @@ def find_free_slots(date: str, duration_minutes: int = 60) -> list[str]:
                 free.append(f"{h % 12 or 12}{'am' if h < 12 else 'pm'}")
         return free[:5]
     except Exception as e:
-        print(f"Free slot error: {e}")
+        logger.error("Free slot error: %s", e)
         return []
 
 
 def get_todays_events() -> list[dict]:
-    """Return only today's events (midnight to midnight ET)."""
+    """Return only today's events (midnight to midnight ET, DST-aware)."""
     if not is_configured():
         return []
     try:
-        today = datetime.date.today()
+        today = _et_now().date()
         svc = _service()
-        day_start = f"{today}T00:00:00-05:00"
-        day_end   = f"{today}T23:59:59-05:00"
+        day_start, day_end = _et_day_window(today)
         all_events = []
         for cal_id in _get_calendar_ids():
             try:
@@ -163,7 +187,34 @@ def get_todays_events() -> list[dict]:
         all_events.sort(key=lambda ev: ev.get("start", {}).get("dateTime", ev.get("start", {}).get("date", "")))
         return all_events
     except Exception as e:
-        print(f"Today events error: {e}")
+        logger.error("Today events error: %s", e)
+        return []
+
+
+def get_events_for_date(date: datetime.date) -> list[dict]:
+    """Return events for any specific date (midnight to midnight ET, DST-aware)."""
+    if not is_configured():
+        return []
+    try:
+        svc = _service()
+        day_start, day_end = _et_day_window(date)
+        all_events = []
+        for cal_id in _get_calendar_ids():
+            try:
+                result = svc.events().list(
+                    calendarId=cal_id,
+                    timeMin=day_start,
+                    timeMax=day_end,
+                    singleEvents=True,
+                    orderBy="startTime",
+                ).execute()
+                all_events.extend(result.get("items", []))
+            except Exception:
+                continue
+        all_events.sort(key=lambda ev: ev.get("start", {}).get("dateTime", ev.get("start", {}).get("date", "")))
+        return all_events
+    except Exception as e:
+        logger.error("get_events_for_date error: %s", e)
         return []
 
 
@@ -194,18 +245,20 @@ def delete_event(keyword: str) -> str:
             return f"🗑 Deleted: *{title}*"
         return f"⚠️ Couldn't delete '{title}' — may not have edit access."
     except Exception as e:
-        print(f"Delete event error: {e}")
+        logger.error("Delete event error: %s", e)
         return "⚠️ Error deleting event."
 
 
 def check_conflicts(date: str, time: str, duration_minutes: int = 60) -> list[str]:
-    """Return titles of events that overlap a proposed time slot."""
+    """Return titles of events that overlap a proposed time slot (DST-aware)."""
     try:
         svc = _service()
         h, m = int(time[:2]), int(time[3:5])
-        total_end = h * 60 + m + duration_minutes
-        slot_start = f"{date}T{time}:00-05:00"
-        slot_end   = f"{date}T{total_end // 60:02d}:{total_end % 60:02d}:00-05:00"
+        date_obj  = datetime.date.fromisoformat(date)
+        slot_dt   = datetime.datetime(date_obj.year, date_obj.month, date_obj.day, h, m, 0, tzinfo=_ET)
+        slot_end_dt = slot_dt + datetime.timedelta(minutes=duration_minutes)
+        slot_start = slot_dt.isoformat()
+        slot_end   = slot_end_dt.isoformat()
         conflicts = []
         for cal_id in _get_calendar_ids():
             try:
@@ -223,7 +276,7 @@ def check_conflicts(date: str, time: str, duration_minutes: int = 60) -> list[st
                 continue
         return conflicts
     except Exception as e:
-        print(f"Conflict check error: {e}")
+        logger.error("Conflict check error: %s", e)
         return []
 
 
@@ -240,7 +293,7 @@ def format_events(events: list[dict]) -> str:
             # Parse and format nicely
             try:
                 d = datetime.datetime.fromisoformat(dt.replace("Z", "+00:00"))
-                d = d.astimezone(datetime.timezone(datetime.timedelta(hours=-4)))  # ET
+                d = d.astimezone(_ET)  # Always correct: handles EDT and EST automatically
                 dt_str = d.strftime("%a %b %-d, %-I:%M%p").lower().replace("am","am").replace("pm","pm")
             except Exception:
                 dt_str = dt[:16]

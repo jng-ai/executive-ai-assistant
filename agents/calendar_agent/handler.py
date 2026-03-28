@@ -11,10 +11,24 @@ v2 additions:
 """
 
 import datetime
+import logging
 import re
 import json
 from core.llm import chat
 from integrations.google.auth import is_configured
+
+logger = logging.getLogger(__name__)
+
+# Module-level imports so tests can patch these symbols directly.
+# These will fail gracefully if Google credentials aren't configured.
+try:
+    from integrations.google.calendar_client import (
+        list_events, create_event, find_free_slots, format_events,
+        get_todays_events, delete_event, check_conflicts, get_events_for_date,
+    )
+except Exception:
+    list_events = create_event = find_free_slots = format_events = None  # type: ignore
+    get_todays_events = delete_event = check_conflicts = get_events_for_date = None  # type: ignore
 
 SYSTEM = """You are Justin Ngai's executive calendar assistant. You help schedule, manage, and optimize his time.
 
@@ -41,7 +55,7 @@ PARSE_PROMPT = """Extract calendar intent from this message. Return JSON only.
 
 Return:
 {
-  "action": "today" | "list" | "create" | "free_slots" | "delete" | "question",
+  "action": "today" | "tomorrow" | "date" | "list" | "create" | "free_slots" | "delete" | "question",
   "title": "event title if creating/deleting",
   "date": "YYYY-MM-DD if mentioned",
   "time": "HH:MM in 24h format if mentioned",
@@ -60,8 +74,19 @@ Date resolution rules:
 - "next week" → 7 days from today
 - "in 2 weeks" → 14 days from today
 
+Action rules:
+- "today" → use action "today" (no date needed)
+- Any question about tomorrow → use action "tomorrow" (no date needed)
+- Any question about a specific named day or date → use action "date" with the resolved date
+- Listing multiple days/weeks → use action "list" with days_ahead
+
 Examples:
 "What's on my calendar today?" → {"action":"today"}
+"Do I have plans tomorrow?" → {"action":"tomorrow"}
+"What's on tomorrow?" → {"action":"tomorrow"}
+"Am I busy tomorrow?" → {"action":"tomorrow"}
+"What's on Thursday?" → {"action":"date","date":"THURSDAY_DATE"}
+"Any events Friday?" → {"action":"date","date":"FRIDAY_DATE"}
 "Schedule dinner with Alex Friday 7pm" → {"action":"create","title":"Dinner with Alex","date":"FRIDAY_DATE","time":"19:00","duration_minutes":120}
 "What's on my calendar this week?" → {"action":"list","days_ahead":7}
 "Am I free Thursday afternoon?" → {"action":"free_slots","date":"THURSDAY_DATE"}
@@ -123,11 +148,6 @@ def handle(message: str) -> str:
             "Run `python scripts/google_auth.py` to authorize."
         )
 
-    from integrations.google.calendar_client import (
-        list_events, create_event, find_free_slots, format_events,
-        get_todays_events, delete_event, check_conflicts
-    )
-
     parsed = _parse_request(message)
     action = parsed.get("action", "question")
 
@@ -139,9 +159,44 @@ def handle(message: str) -> str:
         formatted = format_events(events)
         return f"📅 *Today's agenda:*\n\n{formatted}"
 
+    # ── Tomorrow's agenda ───────────────────────────────────────────────────
+    elif action == "tomorrow":
+        tomorrow = datetime.date.today() + datetime.timedelta(days=1)
+        events = get_events_for_date(tomorrow)
+        if not events:
+            return f"📅 Nothing on the calendar tomorrow ({tomorrow.strftime('%A, %b %-d')}) — free day!"
+        formatted = format_events(events)
+        return f"📅 *Tomorrow ({tomorrow.strftime('%A, %b %-d')}):*\n\n{formatted}"
+
+    # ── Specific date agenda ─────────────────────────────────────────────────
+    elif action == "date":
+        date_str = parsed.get("date", "")
+        try:
+            date_obj = datetime.date.fromisoformat(date_str)
+        except (ValueError, TypeError):
+            date_obj = datetime.date.today() + datetime.timedelta(days=1)
+        events = get_events_for_date(date_obj)
+        day_str = date_obj.strftime("%A, %B %-d")
+        if not events:
+            return f"📅 Nothing on {day_str} — clear schedule."
+        formatted = format_events(events)
+        return f"📅 *{day_str}:*\n\n{formatted}"
+
     # ── List events ─────────────────────────────────────────────────────────
     elif action == "list":
         days = parsed.get("days_ahead", 7)
+        # If a specific date was given, fetch just that date
+        date_str = parsed.get("date", "")
+        if date_str:
+            try:
+                date_obj = datetime.date.fromisoformat(date_str)
+                events = get_events_for_date(date_obj)
+                day_str = date_obj.strftime("%A, %B %-d")
+                if not events:
+                    return f"📅 Nothing on {day_str} — free."
+                return f"📅 *{day_str}:*\n\n{format_events(events)}"
+            except (ValueError, TypeError):
+                pass
         events = list_events(days_ahead=days)
         if not events:
             return f"📅 Nothing scheduled in the next {days} days. Want to add something?"
@@ -223,10 +278,12 @@ def handle(message: str) -> str:
 
     # ── General question ────────────────────────────────────────────────────
     else:
+        from core.conversation import get_history_for_llm
         events = list_events(days_ahead=14)
         event_summary = format_events(events[:10]) if events else "No upcoming events"
         context = f"Justin's upcoming calendar:\n{event_summary}\n\nQuestion: {message}"
-        return chat(SYSTEM, context, max_tokens=400)
+        history = get_history_for_llm(n=3)
+        return chat(SYSTEM, context, max_tokens=400, history=history)
 
 
 def run_morning_briefing() -> str:
@@ -266,7 +323,7 @@ def run_morning_briefing() -> str:
 
         return "\n".join(parts)
     except Exception as e:
-        print(f"Morning briefing error: {e}")
+        logger.warning("Morning briefing error: %s", e)
         return ""
 
 
@@ -336,7 +393,7 @@ def run_eod_calendar() -> str:
 
         return "\n\n".join(parts) if parts else ""
     except Exception as e:
-        print(f"EOD calendar error: {e}")
+        logger.warning("EOD calendar error: %s", e)
         return ""
 
 

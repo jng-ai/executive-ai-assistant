@@ -59,8 +59,12 @@ def _days_ago(iso: str) -> str:
 
 
 def _et_now() -> datetime.datetime:
-    et = datetime.timezone(datetime.timedelta(hours=-5))
-    return datetime.datetime.now(tz=et)
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.datetime.now(tz=ZoneInfo("America/New_York"))
+    except Exception:
+        et = datetime.timezone(datetime.timedelta(hours=-4))
+        return datetime.datetime.now(tz=et)
 
 
 # ── Per-agent status (one-liner for main hub) ─────────────────────────────────
@@ -197,7 +201,7 @@ def _followup_oneliner() -> str:
         pending = list_all_pending()
         if not pending:
             return "No pending follow-ups"
-        overdue = [f for f in pending if f.get("due_date", "") <= datetime.date.today().isoformat()]
+        overdue = [f for f in pending if f.get("due", "") <= datetime.date.today().isoformat()]
         return f"{len(pending)} pending · {len(overdue)} due today"
     except Exception:
         return "No pending follow-ups"
@@ -497,8 +501,8 @@ def _followup_dashboard() -> str:
         if not pending:
             lines.append("_No pending follow-ups_ ✅")
         else:
-            overdue = [f for f in pending if f.get("due_date", "") <= today]
-            upcoming = [f for f in pending if f.get("due_date", "") > today]
+            overdue = [f for f in pending if f.get("due", "") <= today]
+            upcoming = [f for f in pending if f.get("due", "") > today]
             if overdue:
                 lines.append(f"*⚠️ Due today/overdue ({len(overdue)}):*")
                 for f in overdue[:5]:
@@ -507,7 +511,7 @@ def _followup_dashboard() -> str:
             if upcoming:
                 lines.append(f"*📅 Upcoming ({len(upcoming)}):*")
                 for f in upcoming[:5]:
-                    due = f.get("due_date", "")[:10]
+                    due = f.get("due", "")[:10]
                     lines.append(f"• #{f['id']} {due} · {f.get('contact','?')} — {f.get('context','')[:35]}")
     except Exception as e:
         lines.append(f"_Error loading follow-ups: {e}_")

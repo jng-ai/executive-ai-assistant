@@ -11,6 +11,7 @@ Privacy design:
 """
 
 from core.llm import chat
+from core.conversation import get_history_for_llm
 
 # Generic — zero identifying information passed to the LLM
 SYSTEM = (
@@ -22,4 +23,5 @@ SYSTEM = (
 
 
 def handle_general(message: str) -> str:
-    return chat(SYSTEM, message, max_tokens=500)
+    history = get_history_for_llm(n=4)
+    return chat(SYSTEM, message, max_tokens=500, history=history)

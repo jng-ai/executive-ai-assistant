@@ -58,12 +58,15 @@ class TestTravelAgent:
         assert mock_search.called
         assert result == "scan results"
 
-    def test_empty_message_triggers_scan(self):
-        with patch("agents.travel_agent.handler.search", return_value=[]) as mock_search:
-            with patch("agents.travel_agent.handler.chat", return_value="scan results"):
-                from agents.travel_agent.handler import handle
-                handle("")
-        assert mock_search.called
+    def test_empty_message_falls_back_to_chat(self):
+        """Empty message blends available context and calls chat (no search needed)."""
+        with patch("agents.travel_agent.handler.fetch_live_deals", return_value={}):
+            with patch("agents.travel_agent.handler._fetch_escape_rss", return_value=[]):
+                with patch("agents.travel_agent.handler.chat", return_value="scan results") as mock_chat:
+                    from agents.travel_agent.handler import handle
+                    result = handle("")
+        assert mock_chat.called
+        assert result == "scan results"
 
     def test_scan_formats_results(self):
         fake_results = [{"title": "ANA deal", "url": "http://x.com", "content": "great deal"}]

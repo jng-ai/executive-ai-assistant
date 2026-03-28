@@ -3,7 +3,8 @@ NYC Social & Events Agent — personalized free event scout for Justin Ngai.
 
 Sources: Luma (lu.ma/nyc), Eventbrite, Meetup, Partiful, Yelp Events,
          nycgo.com, allevents.in, do.nyc, Time Out NYC, Thrillist, Reddit,
-         X/Twitter ("RSVP NYC", "sign up NYC"), Instagram (#RSVPnyc).
+         X/Twitter ("RSVP NYC", "sign up NYC"), Instagram (#RSVPnyc),
+         SplashThat (tech/healthcare invite-only events).
 Features:
   - handle()          — on-demand query (responds to Telegram messages)
   - run_event_scan()  — proactive scheduled scan, sends Telegram alert if hot events found
@@ -11,9 +12,14 @@ Features:
 """
 
 import datetime
+import json
+import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from core.llm import chat
 from core.search import search, fetch_page, format_results
+
+_SOCIAL_CACHE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "social_cache.json")
 
 # ── Justin's identity context ─────────────────────────────────────────────────
 
@@ -174,9 +180,11 @@ SOURCE_LABELS = {
     "lu.ma": "Luma",
     "eventbrite.com": "Eventbrite",
     "partiful.com": "Partiful",
+    "splashthat.com": "SplashThat",
     "timeout.com": "Time Out",
     "thrillist.com": "Thrillist",
     "reddit.com": "Reddit",
+    "meetup.com": "Meetup",
 }
 
 
@@ -185,14 +193,14 @@ def _extract_event_urls(content: str) -> list[str]:
     Parse individual event page URLs from a listing/category page's content.
     Returns specific event URLs — not the listing page itself.
 
-    Patterns by platform:
+    Platforms supported:
     - Eventbrite: /e/event-name-tickets-1234567890
     - Luma:       lu.ma/abc123  or  lu.ma/event/slug
     - Meetup:     meetup.com/group-name/events/1234567890/
     - Partiful:   partiful.com/e/abc123
+    - SplashThat: splashthat.com/sites/view/slug  or  brand.splashthat.com
     - Instagram:  instagram.com/p/abc123  or  /reel/abc123
     """
-    import re
     found = []
 
     patterns = [
@@ -206,6 +214,9 @@ def _extract_event_urls(content: str) -> list[str]:
         (r'https?://(?:www\.)?meetup\.com/[\w\-]+/events/\d{6,}/?', "meetup"),
         # Partiful individual event pages
         (r'https?://(?:www\.)?partiful\.com/e/[\w\-]+', "partiful"),
+        # SplashThat — branded subdomain AND /sites/view/ paths
+        (r'https?://[\w\-]+\.splashthat\.com(?:/[\w\-/]*)?', "splashthat"),
+        (r'https?://(?:www\.)?splashthat\.com/sites/view/[\w\-]+', "splashthat"),
         # Instagram posts
         (r'https?://(?:www\.)?instagram\.com/(?:p|reel)/[\w\-]+/?', "instagram"),
         # Picuki/Imginn individual post pages
@@ -219,6 +230,29 @@ def _extract_event_urls(content: str) -> list[str]:
                 found.append(url)
 
     return found[:20]  # cap to avoid noise
+
+
+def _is_listing_url(url: str) -> bool:
+    """Return True if a URL looks like a category/listing page rather than a specific event."""
+    listing_patterns = [
+        r'eventbrite\.com/d/',
+        r'eventbrite\.com/discover',
+        r'lu\.ma/(nyc|discover|home|calendar|about|events)$',
+        r'lu\.ma/(nyc|discover|home|calendar)/?$',
+        r'meetup\.com/find',
+        r'meetup\.com/cities/',
+        r'yelp\.com/events/[^/]+/?$',   # top-level city page
+        r'allevents\.in/[^/]+/?$',
+        r'timeout\.com/newyork/things-to-do',
+        r'nycgo\.com/articles',
+        r'nycfreeevents\.com/?$',
+        r'partiful\.com/?$',
+        r'splashthat\.com/?$',
+    ]
+    for pat in listing_patterns:
+        if re.search(pat, url):
+            return True
+    return False
 
 
 def _listing_page_to_events(content: str, listing_url: str, source_label: str) -> list[dict]:
@@ -401,19 +435,22 @@ def _fetch_meetup() -> list[dict]:
 
 def _fetch_x_rsvp() -> list[dict]:
     """
-    Scan X/Twitter for RSVP NYC and sign up NYC posts.
+    Scan X/Twitter for RSVP NYC / sign up NYC / join us NYC / link in bio posts.
     X blocks most crawlers, so we try Nitter (X proxy) instances first,
     then fall back to Tavily searches that may surface indexed tweet content.
     """
     start, _, _, _ = _get_date_range()
     results = []
 
-    # Nitter search queries — both "RSVP NYC" and "sign up NYC"
+    # Nitter search queries — expanded keyword set
     nitter_queries = [
         "RSVP+NYC+free",
         "sign+up+NYC+free+event",
+        "join+us+NYC+free",
         "RSVP+NYC+lu.ma",
         "NYC+free+event+link",
+        "register+NYC+free+event",
+        "tickets+NYC+free+event",
     ]
     nitter_bases = [
         "https://nitter.privacydev.net",
@@ -423,26 +460,74 @@ def _fetch_x_rsvp() -> list[dict]:
     ]
     found_working_nitter = False
     for base in nitter_bases:
-        for q in nitter_queries[:2]:  # Try first 2 queries on first working instance
+        for q in nitter_queries[:3]:
             url = f"{base}/search?q={q}&f=tweets"
             content = fetch_page(url, max_chars=4000)
             if content and len(content) > 300 and ("tweet" in content.lower() or "nitter" in content.lower()):
-                results.append({"title": f"𝕏: {q.replace('+', ' ')}", "url": url, "content": content})
+                # Extract any event links from the tweet content
+                event_urls = _extract_event_urls(content)
+                if event_urls:
+                    for eu in event_urls:
+                        results.append({"title": f"𝕏 post: {q.replace('+', ' ')}", "url": eu, "content": content[:400]})
+                else:
+                    results.append({"title": f"𝕏: {q.replace('+', ' ')}", "url": url, "content": content})
                 found_working_nitter = True
         if found_working_nitter:
             break
 
-    # Tavily searches for indexed X/tweet content
+    # Tavily searches for indexed X/tweet content — expanded keywords
     x_queries = [
-        f'"RSVP NYC" free event {start} 2026 lu.ma OR eventbrite OR partiful',
+        f'"RSVP NYC" free event {start} 2026 lu.ma OR eventbrite OR partiful OR splashthat',
         f'"sign up NYC" free event {start} 2026',
+        f'"join us NYC" free event {start} 2026',
         f'"RSVP NYC" OR "sign up NYC" free food drinks event {start} 2026',
         f'"NYC free event" RSVP link 2026 healthcare OR tech OR food OR popup',
         f'x.com "RSVP NYC" event free {start} 2026',
+        f'"link in bio" NYC free event RSVP {start} 2026',
+        f'"register now" NYC free event {start} 2026 lu.ma OR eventbrite OR splashthat',
     ]
     for q in x_queries:
         for r in search(q, max_results=4):
             results.append(r)
+
+    return results
+
+
+def _fetch_splashthat() -> list[dict]:
+    """
+    Scrape SplashThat for NYC events.
+    SplashThat is used heavily by tech companies, healthcare orgs, and startups
+    for invite-only and semi-public events — many never appear on Eventbrite or Luma.
+
+    Approach:
+    1. Search Tavily for site:splashthat.com NYC events
+    2. Search for branded SplashThat subdomains with NYC keywords
+    3. Direct fetch of SplashThat discovery pages if available
+    """
+    start, _, _, _ = _get_date_range()
+    results = []
+
+    # Tavily searches for SplashThat NYC events
+    splash_queries = [
+        f'site:splashthat.com NYC event free {start} 2026',
+        f'site:splashthat.com NYC networking {start} 2026',
+        f'site:splashthat.com NYC tech startup healthcare {start} 2026',
+        f'site:splashthat.com NYC AAPI Asian professional {start} 2026',
+        f'site:splashthat.com NYC free food drinks reception {start} 2026',
+        f'splashthat.com NYC event RSVP free {start} 2026',
+        f'splashthat NYC "free" OR "RSVP" event {start} 2026',
+        # Branded subdomains commonly used in NYC tech/health space
+        f'splashthat NYC health OR healthcare OR hospital OR medical event {start} 2026',
+        f'splashthat NYC startup founder investor networking {start} 2026',
+    ]
+    for q in splash_queries:
+        for r in search(q, max_results=4):
+            # Prioritize actual splashthat.com links
+            url = r.get("url", "")
+            if "splashthat.com" in url:
+                results.insert(0, r)  # bump specific splashthat links to top
+            else:
+                results.append(r)
 
     return results
 
@@ -572,6 +657,46 @@ def _fetch_new_activities() -> list[dict]:
     return results
 
 
+def _enrich_listing_results(results: list[dict]) -> list[dict]:
+    """
+    Post-process search results: for any result whose URL is a listing/category page,
+    attempt to fetch the page and extract specific event URLs.
+    Results with specific event URLs replace the listing result.
+    """
+    enriched = []
+    seen_urls: set[str] = set()
+
+    for r in results:
+        url = r.get("url", "")
+        if url in seen_urls:
+            continue
+
+        if url and _is_listing_url(url):
+            # Try to fetch the listing page and extract specific event links
+            try:
+                content = fetch_page(url, max_chars=6000)
+                if content and len(content) > 200:
+                    specific_urls = _extract_event_urls(content)
+                    if specific_urls:
+                        for ev_url in specific_urls:
+                            if ev_url not in seen_urls:
+                                seen_urls.add(ev_url)
+                                enriched.append({
+                                    "title": r.get("title", "Event"),
+                                    "url": ev_url,
+                                    "content": r.get("content", "") + " " + content[:400],
+                                })
+                        seen_urls.add(url)
+                        continue
+            except Exception:
+                pass
+
+        seen_urls.add(url)
+        enriched.append(r)
+
+    return enriched
+
+
 def _gather_all_events(focus: str = "") -> list[dict]:
     """
     Run all source fetchers in parallel and combine results.
@@ -582,6 +707,7 @@ def _gather_all_events(focus: str = "") -> list[dict]:
         "eventbrite": _fetch_eventbrite,
         "meetup": _fetch_meetup,
         "x_rsvp": _fetch_x_rsvp,
+        "splashthat": _fetch_splashthat,
         "instagram": _fetch_instagram,
         "new_activities": _fetch_new_activities,
         "other": _fetch_other_sources,
@@ -613,6 +739,9 @@ def _gather_all_events(focus: str = "") -> list[dict]:
                 if r["url"] not in seen_urls:
                     seen_urls.add(r["url"])
                     all_results.append(r)
+
+    # Upgrade listing-page URLs to specific event page URLs where possible
+    all_results = _enrich_listing_results(all_results)
 
     return _filter_stale(all_results)
 
@@ -772,4 +901,65 @@ def run_event_scan(send_all: bool = False) -> str:
 
     body = chat(SYSTEM, prompt, max_tokens=900)
 
+    # ── Save structured event data to social_cache.json for dashboard ─────────
+    try:
+        _save_social_cache(results[:30], body, today_iso, hot)
+    except Exception:
+        pass
+
     return f"{mode_label}{hot_note}\n\n{body}"
+
+
+def _save_social_cache(raw_results: list[dict], llm_summary: str, scan_date: str, hot: bool) -> None:
+    """
+    Persist event data to data/social_cache.json for the dashboard API.
+    Extracts structured event objects from raw results and the LLM summary.
+    """
+    events = []
+    seen_urls: set[str] = set()
+
+    # Build structured events from raw search results that have specific event URLs
+    for r in raw_results:
+        url = r.get("url", "")
+        if not url or _is_listing_url(url) or url in seen_urls:
+            continue
+        seen_urls.add(url)
+
+        # Determine source label
+        source = "Web"
+        for domain, label in SOURCE_LABELS.items():
+            if domain in url:
+                source = label
+                break
+
+        title = r.get("title", "").strip()
+        content = r.get("content", "")
+
+        # Attempt to extract a date from content/title
+        date_match = re.search(
+            r'\b(January|February|March|April|May|June|July|August|September|October|November|December)'
+            r'\s+\d{1,2}(?:,\s*\d{4})?',
+            content + " " + title, re.IGNORECASE
+        )
+        event_date = date_match.group(0) if date_match else ""
+
+        events.append({
+            "title": title,
+            "url": url,
+            "source": source,
+            "date": event_date,
+            "content_snippet": content[:200],
+        })
+
+    cache = {
+        "last_scan": scan_date,
+        "hot": hot,
+        "event_count": len(events),
+        "events": events[:25],
+        "summary": llm_summary,
+    }
+
+    cache_path = os.path.normpath(_SOCIAL_CACHE_PATH)
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    with open(cache_path, "w") as f:
+        json.dump(cache, f, indent=2)

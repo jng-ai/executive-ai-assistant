@@ -302,7 +302,10 @@ class TestHandleDispatch:
 class TestBudgetSummary:
     def test_empty_budget_returns_no_data(self, finance_tmp):
         from agents.finance_agent.handler import _budget_summary
-        result = _budget_summary()
+        import agents.finance_agent.handler as h
+        # Prevent Origin API call when budget is empty
+        with patch.object(h, "_origin_finance_context", return_value=""):
+            result = _budget_summary()
         assert "Nothing logged" in result or "Budget" in result
 
     def test_with_expenses_shows_totals(self, finance_tmp):
@@ -318,10 +321,12 @@ class TestBudgetSummary:
         assert "230" in result or "$230" in result  # total expenses
 
     def test_old_entries_excluded(self, finance_tmp):
+        import agents.finance_agent.handler as h
         from agents.finance_agent.handler import _save_budget, _budget_summary
         old_date = "2020-01-15"
         _save_budget([{"type": "expense", "amount": 9999, "category": "old", "date": old_date}])
-        result = _budget_summary()
+        with patch.object(h, "_origin_finance_context", return_value=""):
+            result = _budget_summary()
         assert "9999" not in result
 
 

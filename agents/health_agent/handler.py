@@ -32,9 +32,12 @@ Justin's targets:
 """
 
 import json
+import logging
 import datetime
 from core.llm import chat
 from core.memory import log_health, get_health_summary
+
+logger = logging.getLogger(__name__)
 
 # ── Targets ───────────────────────────────────────────────────────────────────
 
@@ -157,8 +160,12 @@ def _is_num(val: str) -> bool:
 
 
 def _et_hour() -> int:
-    et = datetime.timezone(datetime.timedelta(hours=-5))
-    return datetime.datetime.now(tz=et).hour
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.datetime.now(tz=ZoneInfo("America/New_York")).hour
+    except Exception:
+        # Fallback: rough UTC-4 (EDT). Better than always using EST.
+        return (datetime.datetime.utcnow().hour - 4) % 24
 
 
 def _meal_label() -> str:
@@ -278,20 +285,70 @@ def _what_to_eat(message: str) -> str:
     return chat(SYSTEM, prompt, max_tokens=400)
 
 
+# ── Workout rotation helpers ──────────────────────────────────────────────────
+
+_ROTATION = ["push", "pull", "legs", "swim"]
+
+# "press" removed from push — "leg press" contains it and should resolve to legs (via "leg")
+# "rdl" removed from legs — "romanian deadlift RDL" should resolve to pull (via "deadlift")
+# "ran" added to swim — "ran 5 miles" is cardio, not strength
+_PUSH_KW  = ["push", "chest", "shoulder", "tricep", "bench", "delt", "overhead"]
+_PULL_KW  = ["pull", "back", "row", "deadlift", "bicep", "lat", "chin", "pullup", "pull-up", "rhomboid"]
+_LEGS_KW  = ["leg", "squat", "lunge", "hamstring", "quad", "glute", "calf", "hip thrust"]
+_SWIM_KW  = ["swim", "pool", "cardio", "run", "ran", "bike", "cycle", "endurance", "hiit", "sprint"]
+
+
+def _classify_workout_type(value: str) -> str | None:
+    """Return 'push' | 'pull' | 'legs' | 'swim' from a workout log entry, or None."""
+    v = value.lower()
+    # Check legs before push — "leg press" and "quad extensions leg press" resolve to legs
+    if any(k in v for k in _LEGS_KW):  return "legs"
+    if any(k in v for k in _PUSH_KW):  return "push"
+    if any(k in v for k in _PULL_KW):  return "pull"
+    if any(k in v for k in _SWIM_KW):  return "swim"
+    return None
+
+
+def _next_rotation_type(recent_workouts: list[dict]) -> str:
+    """
+    Walk backwards through recent workout logs, find the last classifiable type,
+    and return the NEXT type in the push→pull→legs→swim rotation.
+    Returns 'push' if no classifiable history.
+    """
+    for log in reversed(recent_workouts):
+        wtype = _classify_workout_type(log.get("value", ""))
+        if wtype:
+            idx = _ROTATION.index(wtype)
+            return _ROTATION[(idx + 1) % len(_ROTATION)]
+    return _ROTATION[0]
+
+
 # ── Workout suggestions ───────────────────────────────────────────────────────
 
 def _suggest_workout(message: str) -> str:
     """
-    Suggest next workout based on:
-    - Recent workout history (avoid repeating muscle groups)
-    - Weekly frequency so far
-    - Whether to lift or swim
+    Suggest next workout using push/pull/legs/swim rotation.
+    Enforces rotation deterministically — LLM cannot override the type.
     """
     recent = _get_recent_workouts(days=7)
     week_logs = get_health_summary(7)
     workouts_this_week = [l for l in week_logs if l.get("metric") == "workout"]
     count_this_week = len(workouts_this_week)
     remaining = max(0, TARGETS["workouts"]["goal"] - count_this_week)
+
+    next_type = _next_rotation_type(recent)
+
+    # Force swim if 3+ heavy lifts this week and no swim yet
+    heavy_lifts = sum(
+        1 for l in workouts_this_week
+        if _classify_workout_type(l.get("value", "")) in ("push", "pull", "legs")
+    )
+    swims_this_week = sum(
+        1 for l in workouts_this_week
+        if _classify_workout_type(l.get("value", "")) == "swim"
+    )
+    if heavy_lifts >= 3 and swims_this_week == 0:
+        next_type = "swim"
 
     if recent:
         recent_desc = "\n".join(f"- {r.get('value','')}" for r in recent[-5:])
@@ -304,11 +361,12 @@ def _suggest_workout(message: str) -> str:
         f"This week: {count_this_week}/{TARGETS['workouts']['goal']} workouts done. "
         f"{remaining} more needed to hit goal.\n\n"
         f"Justin's request: {message}\n\n"
-        "Design the NEXT best workout for him. Rules:\n"
-        "- Don't repeat muscle groups trained in the last 48 hours\n"
-        "- If he's done 2+ heavy lifts this week, suggest a swim day for recovery\n"
-        "- Use Push / Pull / Legs / Swim rotation as the default split\n"
-        "- Include abs/core at the end of every lifting session\n\n"
+        f"REQUIRED WORKOUT TYPE: **{next_type.upper()}** — this is determined by the rotation schedule "
+        f"and CANNOT be changed. Design a {next_type} workout.\n\n"
+        "Rules:\n"
+        "- Rotation is Push → Pull → Legs → Swim. You MUST follow this.\n"
+        "- Include abs/core at the end of every lifting session\n"
+        "- Vary specific exercises (different chest movements each push day, etc.)\n\n"
         "Format:\n"
         "💪 *[Workout Name]* — [~X min]\n\n"
         "| Exercise | Sets × Reps | Rest |\n"
@@ -481,9 +539,11 @@ def handle(message: str) -> str:
         return log_response
 
     # ── Fallback: general health question ─────────────────────────────────────
+    from core.conversation import get_history_for_llm
     summary_data = get_health_summary(7)
     context = f"Justin's recent health logs (7 days):\n{summary_data}\n\nQuestion: {message}"
-    return chat(SYSTEM, context, max_tokens=400)
+    history = get_history_for_llm(n=3)
+    return chat(SYSTEM, context, max_tokens=400, history=history)
 
 
 # ── Summary builder ───────────────────────────────────────────────────────────

@@ -20,11 +20,14 @@ Capabilities:
 """
 
 import json
+import logging
 import datetime
 import re
 from pathlib import Path
 from core.llm import chat
 from core.search import search, format_results
+
+logger = logging.getLogger(__name__)
 
 # ── Data files ───────────────────────────────────────────────────────────────
 DATA_DIR = Path(__file__).parent.parent.parent / "data"
