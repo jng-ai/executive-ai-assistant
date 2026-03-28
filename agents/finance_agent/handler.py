@@ -31,10 +31,11 @@ logger = logging.getLogger(__name__)
 
 # ── Data files ───────────────────────────────────────────────────────────────
 DATA_DIR = Path(__file__).parent.parent.parent / "data"
-BONUS_DATA_FILE   = DATA_DIR / "finance_bonuses.json"
-BUDGET_FILE       = DATA_DIR / "budget_log.json"
-PROFILE_FILE      = DATA_DIR / "financial_profile.json"
-SIDE_HUSTLE_FILE  = DATA_DIR / "side_hustle_ideas.json"
+BONUS_DATA_FILE      = DATA_DIR / "finance_bonuses.json"
+BUDGET_FILE          = DATA_DIR / "budget_log.json"
+PROFILE_FILE         = DATA_DIR / "financial_profile.json"
+SIDE_HUSTLE_FILE     = DATA_DIR / "side_hustle_ideas.json"
+INVESTMENT_FLAGS_FILE = DATA_DIR / "finance_investment_flags.json"
 
 # ── Justin's financial context (baseline for every prompt) ──────────────────
 JUSTIN_CONTEXT = """
@@ -53,27 +54,36 @@ Key tax levers: QBI deduction (SE), Solo 401(k)/SEP-IRA, home office, rental dep
                 (27.5yr), SALT cap ($10k), potential S-Corp election, passive activity rules
 """
 
-SYSTEM = f"""You are Justin Ngai's personal finance advisor — a pocket CFA/CFP.
+SYSTEM = f"""You are Justin Ngai's personal financial board of directors — a coalition of:
+
+• JP Morgan Private Bank Managing Director — macro-aware wealth management, credit strategy, real estate financing, tax-efficient structuring for high-net-worth multi-income professionals
+• Jane Street Principal — quantitative risk assessment, systematic allocation, factor-aware portfolio construction, precise expected-value calculations
 
 {JUSTIN_CONTEXT}
 
-Your expertise:
-1. CC/bank signup bonuses — Doctor of Credit, Frequent Miler, r/churning level depth
-2. Tax optimization for W2 + self-employment + rental income
-3. Side hustle and passive income strategy for a high-income professional
-4. Holistic wealth building and financial review
+Your mandate:
+1. ANALYZE — Review financial data with precision. Flag anomalies, trends, drift from targets.
+2. SURFACE — Proactively raise what Justin should know, even if he didn't ask.
+3. TRANSLATE — Connect macro movements (Fed, rates, sector rotation, credit spreads) to Justin's balance sheet.
+4. RECOMMEND — Give concrete, quantified, actionable guidance. State conviction: HIGH / MEDIUM / LOW.
+5. PIPELINE — When analysis reveals investment opportunities, flag them explicitly for the investment agent.
+
+Expertise domains:
+• CC/bank signup bonuses — Doctor of Credit, Frequent Miler, r/churning depth
+• Tax: W2 + SE + rental optimization — QBI, Solo 401k, depreciation, S-Corp, SALT
+• Side hustle and passive income for a high-income NYC professional
+• Portfolio construction, allocation drift, real estate leverage
 
 Style:
-• Lead with the headline number/opportunity — no preamble
-• Use emojis for quick phone scanning
-• Be concise: Justin wants intel, not lectures
-• For bonuses: always state min spend, time window, annual fee, re-eligibility rule
-• For tax: cite specific strategies, flag "clear win" vs "grey area" vs "aggressive"
-• For side hustles: be concrete — time investment, startup cost, realistic income range, tax treatment
-• Think like a CFA: quantify value, compare alternatives, surface risk
+• Board-room directness — lead with the headline insight, no preamble
+• Quantify everything: "$X at risk", "X% over budget", "~$X opportunity value"
+• Urgency flags: 🔴 ACT NOW  🟡 WATCH  🟢 NOTED
+• Use real Origin numbers when available — never estimate what you can measure
+• Phone-friendly: bullets, emojis, scannable sections
+• For bonuses: min spend, time window, annual fee, re-eligibility rule
+• For tax: cite strategy, flag CLEAR WIN / GREY AREA / AGGRESSIVE
 
-When you learn new financial facts about Justin (new income, new card, new property),
-note them so they can update his profile."""
+When you learn new financial facts about Justin, note them for profile update."""
 
 
 # ── Trusted sources ─────────────────────────────────────────────────────────
@@ -1073,6 +1083,243 @@ If cannot parse: {"type": null}"""
     )
 
 
+def _parse_origin_structured() -> dict:
+    """
+    Parse raw Origin page text into clean structured metrics.
+    Returns dict with net_worth, budget, spending, investments, equity keys.
+    """
+    try:
+        from integrations.origin.scraper import load_snapshot
+        snap = load_snapshot()
+        if not snap:
+            return {}
+    except Exception:
+        return {}
+
+    result = {}
+
+    # ── Net worth ──────────────────────────────────────────────────────────────
+    dash = snap.get("dashboard_text", "")
+    for line in dash.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        l = line.lower()
+        if "net worth" in l and "$" in line:
+            result["net_worth_line"] = line
+        if ("budget" in l or "spent" in l) and ("%" in line or "$" in line):
+            result.setdefault("budget_lines", []).append(line)
+        if "credit score" in l or "score" in l and any(c.isdigit() for c in line):
+            result["credit_score_line"] = line
+
+    # ── Spending categories ────────────────────────────────────────────────────
+    spending = snap.get("spending_text", "") + snap.get("spending_breakdown_text", "")
+    spending_lines = []
+    for line in spending.split("\n"):
+        line = line.strip()
+        if line and ("$" in line or "%" in line) and len(line) > 3:
+            spending_lines.append(line)
+    result["spending_lines"] = spending_lines[:30]
+
+    # ── Investments ────────────────────────────────────────────────────────────
+    invest = snap.get("investments_text", "")
+    invest_lines = []
+    for line in invest.split("\n"):
+        line = line.strip()
+        if line and ("$" in line or "%" in line or any(kw in line.lower() for kw in
+                     ["401", "ira", "brokerage", "stock", "bond", "etf", "fund", "allocation"])):
+            invest_lines.append(line)
+    result["investment_lines"] = invest_lines[:30]
+
+    # ── Equity / RSU ──────────────────────────────────────────────────────────
+    equity = snap.get("equity_text", "")
+    equity_lines = [l.strip() for l in equity.split("\n")
+                    if l.strip() and ("$" in l or "%" in l or "rsu" in l.lower() or "vest" in l.lower())]
+    result["equity_lines"] = equity_lines[:20]
+
+    # ── Forecast ──────────────────────────────────────────────────────────────
+    forecast = snap.get("forecast_text", "")
+    forecast_lines = [l.strip() for l in forecast.split("\n")
+                      if l.strip() and len(l.strip()) > 5]
+    result["forecast_lines"] = forecast_lines[:15]
+
+    result["_scraped_at"] = snap.get("_scraped_at", "unknown")
+    return result
+
+
+def _get_macro_context() -> str:
+    """
+    Pull real-time macro signals relevant to Justin's financial situation:
+    Fed/rates, real estate, healthcare sector, NYC/NJ market.
+    Returns compressed briefing string.
+    """
+    queries = [
+        "Federal Reserve interest rate outlook 2026 mortgage real estate impact",
+        "NYC NJ real estate market trends rental income 2026",
+        "healthcare sector stocks performance outlook Q2 2026",
+        "high income earner tax strategy changes 2026 IRS Solo 401k limits",
+    ]
+    all_results = []
+    for q in queries:
+        try:
+            results = search(q, max_results=2)
+            all_results.extend(results)
+        except Exception:
+            continue
+
+    if not all_results:
+        return ""
+
+    raw = format_results(all_results[:8])
+    compressed = chat(
+        "You are a macro analyst. Extract only the most actionable signals from these search results "
+        "for a high-income NYC professional with W2+1099 income, two rental properties (VA + NJ), "
+        "and a moderate-aggressive investment portfolio. Be extremely concise — 5-8 bullet points max. "
+        "Focus on: rates/mortgage impact, real estate trends, healthcare sector, tax law changes.",
+        raw,
+        max_tokens=400,
+    )
+    return compressed
+
+
+def _flag_investment_ideas(ideas: list[dict]) -> str:
+    """
+    Save investment ideas flagged by financial analysis to data file.
+    Each idea: {"ticker_or_theme": str, "rationale": str, "conviction": str, "source": "finance_board"}
+    Returns summary of what was flagged.
+    """
+    DATA_DIR.mkdir(exist_ok=True)
+    existing = []
+    if INVESTMENT_FLAGS_FILE.exists():
+        try:
+            existing = json.loads(INVESTMENT_FLAGS_FILE.read_text())
+        except Exception:
+            existing = []
+
+    today = datetime.date.today().isoformat()
+    added = []
+    for idea in ideas:
+        idea["flagged_date"] = today
+        idea["source"] = "finance_board"
+        idea["status"] = "pending_review"
+        existing.append(idea)
+        added.append(idea.get("ticker_or_theme", "?"))
+
+    INVESTMENT_FLAGS_FILE.write_text(json.dumps(existing, indent=2))
+    logger.info("Finance board flagged %d investment ideas: %s", len(added), added)
+    return added
+
+
+def _financial_intelligence_report(trigger: str = "on_demand") -> str:
+    """
+    Core board-level financial intelligence report.
+    Combines Origin structured data + macro context + LLM analysis.
+    Proactively surfaces insights, alerts, and investment signals.
+    """
+    today = datetime.date.today()
+
+    # ── Gather all data ────────────────────────────────────────────────────────
+    origin = _parse_origin_structured()
+    macro_ctx = _get_macro_context()
+    budget = _load_budget()
+    month_start = today.replace(day=1).isoformat()
+    month_entries = [e for e in budget if e.get("date", "") >= month_start]
+    total_out = sum(e.get("amount", 0) for e in month_entries if e.get("type") == "expense")
+    total_in  = sum(e.get("amount", 0) for e in month_entries if e.get("type") == "income")
+    profile_ctx = _profile_context()
+
+    # ── Build prompt ───────────────────────────────────────────────────────────
+    origin_section = ""
+    if origin:
+        origin_section = f"""
+Origin Financial data (scraped {origin.get('_scraped_at', '?')[:10]}):
+Net worth: {origin.get('net_worth_line', 'not found')}
+Credit: {origin.get('credit_score_line', 'not found')}
+Budget lines: {'; '.join(origin.get('budget_lines', [])[:6])}
+Spending: {'; '.join(origin.get('spending_lines', [])[:15])}
+Investments: {'; '.join(origin.get('investment_lines', [])[:10])}
+Equity/RSU: {'; '.join(origin.get('equity_lines', [])[:8])}
+Forecast: {'; '.join(origin.get('forecast_lines', [])[:6])}
+"""
+    else:
+        origin_section = "Origin Financial data: not available (run /origin refresh)"
+
+    macro_section = f"\nMacro context:\n{macro_ctx}" if macro_ctx else ""
+
+    budget_section = f"""
+Manually logged this month: ${total_out:,.0f} expenses / ${total_in:,.0f} income
+"""
+
+    prompt = f"""Conduct a comprehensive financial intelligence briefing for Justin. Today: {today}
+
+{origin_section}
+{budget_section}
+{macro_section}
+{profile_ctx}
+
+Deliver a board-level briefing in this exact format:
+
+📊 **SNAPSHOT**
+[2-3 lines: net worth trend, portfolio value, budget status with % used if available]
+
+🔴🟡🟢 **ALERTS & WATCH LIST**
+[3-5 bullets. Flag overspending categories, portfolio drift, upcoming deadlines, rate/tax risks.
+Use 🔴 ACT NOW / 🟡 WATCH / 🟢 NOTED]
+
+💡 **OPPORTUNITIES**
+[2-4 bullets. Tax moves, refi timing, bonus plays, income optimization, real estate strategy.
+State conviction: HIGH/MEDIUM/LOW and estimated dollar value where possible]
+
+📈 **INVESTMENT SIGNALS** [for investment agent]
+[2-3 bullets max. Specific tickers or themes that emerge from macro + personal situation.
+Format: TICKER/THEME — one-line rationale — conviction HIGH/MEDIUM/LOW]
+
+🎯 **RECOMMENDED ACTIONS THIS WEEK**
+[Top 2-3 concrete next steps with clear owner: "You should..." or "Ask investment agent about..."]"""
+
+    response = chat(SYSTEM + profile_ctx, prompt, max_tokens=1200)
+
+    # ── Extract and save investment signals ───────────────────────────────────
+    if "INVESTMENT SIGNALS" in response:
+        try:
+            signal_section = response.split("INVESTMENT SIGNALS")[1].split("RECOMMENDED ACTIONS")[0]
+            lines = [l.strip("•- ").strip() for l in signal_section.split("\n") if l.strip() and "—" in l]
+            flags = []
+            for line in lines[:4]:
+                parts = line.split("—")
+                if len(parts) >= 2:
+                    conviction = "MEDIUM"
+                    for c in ["HIGH", "MEDIUM", "LOW"]:
+                        if c in line.upper():
+                            conviction = c
+                            break
+                    flags.append({
+                        "ticker_or_theme": parts[0].strip(),
+                        "rationale": parts[1].strip() if len(parts) > 1 else "",
+                        "conviction": conviction,
+                    })
+            if flags:
+                flagged = _flag_investment_ideas(flags)
+                if flagged:
+                    response += f"\n\n_📌 Flagged for investment agent: {', '.join(flagged)}_"
+        except Exception as e:
+            logger.warning("Could not parse investment signals: %s", e)
+
+    return response
+
+
+def run_weekly_board_briefing() -> str:
+    """
+    Weekly financial board meeting — full intelligence report.
+    Scheduled Sunday 6 PM ET. Returns report string (empty = silent).
+    """
+    try:
+        return _financial_intelligence_report(trigger="weekly_scheduled")
+    except Exception as e:
+        logger.error("Weekly board briefing error: %s", e)
+        return ""
+
+
 def _origin_refresh() -> str:
     """
     Refresh Origin data. Tries saved cookies first (autonomous), then Chrome CDP.
@@ -1210,8 +1457,15 @@ def handle(message: str) -> str:
     card     = parsed.get("card_or_bank")
     idea     = parsed.get("idea")
 
-    # Origin Financial shortcuts
     msg_lower = message.lower()
+
+    # Board briefing / financial intelligence
+    if any(w in msg_lower for w in ["board briefing", "financial intel", "finance intel",
+                                     "board meeting", "financial briefing", "full review",
+                                     "financial report", "intelligence report"]):
+        return _financial_intelligence_report()
+
+    # Origin Financial shortcuts
     if any(w in msg_lower for w in ["origin refresh", "refresh origin", "sync origin", "origin sync"]):
         return _origin_refresh()
     if any(w in msg_lower for w in ["origin status", "origin data", "origin snapshot", "origin balance",
@@ -1259,7 +1513,7 @@ def handle(message: str) -> str:
         return _develop_side_hustle(message, idea)
 
     elif msg_type == "finance_review":
-        return _finance_review(message)
+        return _financial_intelligence_report()
 
     elif msg_type == "update_profile":
         return _update_profile(message)

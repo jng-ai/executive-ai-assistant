@@ -99,8 +99,56 @@ _COMMON_WORDS = {
 }
 
 
+def _get_flagged_ideas() -> list[dict]:
+    """Load investment ideas flagged by the finance board."""
+    try:
+        from pathlib import Path
+        flags_file = Path(__file__).parent.parent.parent / "data" / "finance_investment_flags.json"
+        if not flags_file.exists():
+            return []
+        import json
+        flags = json.loads(flags_file.read_text())
+        return [f for f in flags if f.get("status") == "pending_review"]
+    except Exception:
+        return []
+
+
+def _mark_flags_reviewed(tickers: list[str]) -> None:
+    """Mark flagged ideas as reviewed after analysis."""
+    try:
+        from pathlib import Path
+        import json
+        flags_file = Path(__file__).parent.parent.parent / "data" / "finance_investment_flags.json"
+        if not flags_file.exists():
+            return
+        flags = json.loads(flags_file.read_text())
+        for f in flags:
+            if f.get("ticker_or_theme") in tickers:
+                f["status"] = "reviewed"
+        flags_file.write_text(json.dumps(flags, indent=2))
+    except Exception:
+        pass
+
+
 def handle(message: str) -> str:
     msg_lower = message.lower()
+
+    # Finance board flagged ideas — surface them for review
+    if any(kw in msg_lower for kw in ["flagged ideas", "finance flags", "board flags",
+                                       "what did finance flag", "pending ideas"]):
+        flags = _get_flagged_ideas()
+        if not flags:
+            return "📌 No pending investment ideas flagged by the finance board."
+        lines = ["📌 *Finance Board — Flagged Investment Ideas*\n"]
+        tickers = []
+        for f in flags:
+            conv = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢"}.get(f.get("conviction", ""), "•")
+            lines.append(f"{conv} **{f['ticker_or_theme']}** — {f.get('rationale', '')}")
+            lines.append(f"   Flagged: {f.get('flagged_date', '?')} | Conviction: {f.get('conviction', '?')}")
+            tickers.append(f.get("ticker_or_theme", ""))
+        lines.append("\n_Say the ticker name for a full analysis._")
+        _mark_flags_reviewed(tickers)
+        return "\n".join(lines)
 
     # Origin-specific portfolio request — skip ticker detection, go straight to Origin data
     if any(kw in msg_lower for kw in ["origin", "my portfolio", "my holdings", "my investments",

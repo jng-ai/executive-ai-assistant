@@ -267,7 +267,7 @@ class TestHandleDispatch:
 
     def test_finance_review_route(self, finance_tmp):
         with patch("agents.finance_agent.handler._parse_intent", return_value=self._mock_parse("finance_review")):
-            with patch("agents.finance_agent.handler._finance_review", return_value="review") as m:
+            with patch("agents.finance_agent.handler._financial_intelligence_report", return_value="review") as m:
                 from agents.finance_agent.handler import handle
                 handle("review my finances")
         m.assert_called_once()

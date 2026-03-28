@@ -19,7 +19,7 @@ from agents.investment_agent.handler import handle as investment_handle
 from agents.travel_agent.handler import handle as travel_handle
 from agents.health_agent.handler import handle as health_handle, run_daily_nudge, run_lunch_nudge, run_dinner_nudge, run_breakfast_nudge
 from agents.social_agent.handler import handle as social_handle, run_event_scan
-from agents.finance_agent.handler import handle as finance_handle
+from agents.finance_agent.handler import handle as finance_handle, run_weekly_board_briefing
 from agents.bonus_alert.handler import handle as bonus_alert_handle, run_bonus_scan
 from agents.market_agent.handler import handle as market_handle
 from agents.calendar_agent.handler import handle as calendar_handle, run_morning_briefing, run_eod_calendar
@@ -642,6 +642,21 @@ async def _scheduled_confirmation_scan(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Confirmation scan error: {e}")
 
 
+async def _scheduled_board_briefing(context: ContextTypes.DEFAULT_TYPE):
+    """Weekly finance board meeting — Sunday 6 PM ET. Full intelligence report."""
+    try:
+        result = await asyncio.to_thread(run_weekly_board_briefing)
+        if result:
+            chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+            if chat_id:
+                for i in range(0, len(result), 4000):
+                    await context.bot.send_message(
+                        chat_id=chat_id, text=result[i:i+4000], parse_mode="Markdown"
+                    )
+    except Exception as e:
+        logger.error("Weekly board briefing error: %s", e)
+
+
 async def _scheduled_event_scan(context: ContextTypes.DEFAULT_TYPE):
     """
     Twice-weekly NYC event scan — Tuesdays + Fridays at 9 AM ET.
@@ -772,6 +787,15 @@ def run_bot():
             name="daily_confirmation_scan",
         )
         logger.info("Scheduled daily confirmation scan at 8:10 AM ET")
+
+        # Weekly financial board briefing — Sundays 6 PM ET
+        job_queue.run_daily(
+            _scheduled_board_briefing,
+            days=(6,),  # 6 = Sunday
+            time=dt.time(hour=18, minute=0, tzinfo=ET),
+            name="weekly_board_briefing",
+        )
+        logger.info("Scheduled weekly financial board briefing Sunday 6 PM ET")
 
         # Origin Financial data refresh — 8:15 AM ET daily
         # Scrapes budget, spending, investments, equity from Origin → data/origin_snapshot.json
