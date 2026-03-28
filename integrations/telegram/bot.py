@@ -27,14 +27,13 @@ from agents.email_agent.handler import handle as email_handle, run_morning_diges
 from agents.followup_agent.handler import handle as followup_handle, run_pending_followups
 from agents.general_handler import handle_general
 from integrations.telegram.dashboard import build_main_dashboard, build_agent_dashboard
+from integrations.image_pipeline import route_image, _try_create_calendar_event, last_event_cache as _image_event_cache
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# ── Per-user last event cache (for "add to calendar" follow-up) ──────────────
-# Stores {user_id: {"title":..., "date":..., "time":..., ...}} from last event image
-_last_event_cache: dict = {}
+# _last_event_cache lives in integrations/image_pipeline.py (imported as _image_event_cache)
 
 
 # ── Photo handler — triage then route ────────────────────────────────────────
@@ -62,408 +61,30 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "put on calendar", "create event", "add event", "save event"]
     caption_wants_cal = any(p in caption.lower() for p in _cal_phrases)
 
-    # Step 1: triage (skip if caption makes intent obvious)
+    # Triage (skip to event if caption explicitly requests calendar)
     if caption_wants_cal:
         image_type = "event"
     else:
-        image_type = await asyncio.to_thread(_triage_image, image_b64, caption)
+        from integrations.image_pipeline import triage_image
+        image_type = await asyncio.to_thread(triage_image, image_b64, caption)
 
-    # Step 2: route
-    if image_type == "food":
-        await update.message.reply_text("🍽 Logging meal...", parse_mode="Markdown")
-        response = await asyncio.to_thread(_analyze_food_image, image_b64, caption)
+    # Status message while processing
+    _status = {
+        "food": "🍽 Logging meal...", "event": "📅 Extracting event details...",
+        "receipt": "🧾 Reading receipt...", "travel": "✈️ Routing to Travel Agent...",
+        "market": "📈 Routing to Market Agent...", "infusion": "🏥 Routing to Infusion Agent...",
+        "mortgage": "🏠 Routing to Mortgage Agent...", "document": "📄 Reading document...",
+    }
+    await update.message.reply_text(_status.get(image_type, "🔍 Analyzing image..."),
+                                    parse_mode="Markdown")
 
-    elif image_type == "event":
-        await update.message.reply_text("📅 Extracting event details...", parse_mode="Markdown")
-        response = await asyncio.to_thread(_handle_event_image, image_b64, caption, user_id)
-
-    elif image_type == "receipt":
-        await update.message.reply_text("🧾 Reading receipt...", parse_mode="Markdown")
-        response = await asyncio.to_thread(_handle_receipt_image, image_b64, caption)
-
-    elif image_type == "travel":
-        await update.message.reply_text("✈️ Routing to Travel Agent...", parse_mode="Markdown")
-        response = await asyncio.to_thread(_handle_image_with_agent, image_b64, caption, "travel")
-
-    elif image_type == "market":
-        await update.message.reply_text("📈 Routing to Market Agent...", parse_mode="Markdown")
-        response = await asyncio.to_thread(_handle_image_with_agent, image_b64, caption, "market")
-
-    elif image_type == "infusion":
-        await update.message.reply_text("🏥 Routing to Infusion Agent...", parse_mode="Markdown")
-        response = await asyncio.to_thread(_handle_image_with_agent, image_b64, caption, "infusion")
-
-    elif image_type == "mortgage":
-        await update.message.reply_text("🏠 Routing to Mortgage Agent...", parse_mode="Markdown")
-        response = await asyncio.to_thread(_handle_image_with_agent, image_b64, caption, "mortgage")
-
-    elif image_type == "document":
-        await update.message.reply_text("📄 Reading document...", parse_mode="Markdown")
-        response = await asyncio.to_thread(_handle_document_image, image_b64, caption)
-
-    else:
-        # general / unknown
-        await update.message.reply_text("🔍 Analyzing image...", parse_mode="Markdown")
-        response = await asyncio.to_thread(_handle_general_image, image_b64, caption)
+    response, _ = await asyncio.to_thread(route_image, image_b64, caption, user_id)
 
     if len(response) > 4000:
         for i in range(0, len(response), 4000):
             await update.message.reply_text(response[i:i+4000], parse_mode="Markdown")
     else:
         await update.message.reply_text(response, parse_mode="Markdown")
-
-
-def _vision_call(image_b64: str, prompt: str, max_tokens: int = 600) -> str:
-    """Shared helper — sends image + prompt to Groq vision model."""
-    from openai import OpenAI
-    client = OpenAI(
-        api_key=os.environ.get("GROQ_API_KEY", ""),
-        base_url="https://api.groq.com/openai/v1",
-    )
-    resp = client.chat.completions.create(
-        model="llama-3.2-11b-vision-preview",
-        max_tokens=max_tokens,
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
-                {"type": "text", "text": prompt},
-            ]
-        }]
-    )
-    return resp.choices[0].message.content.strip()
-
-
-def _triage_image(image_b64: str, caption: str = "") -> str:
-    """
-    Vision + caption triage — classifies image into an agent-specific route.
-
-    Returns one of:
-      food | event | receipt | document |
-      travel | market | infusion | mortgage | general
-
-    Caption is a strong override signal — user's words matter most.
-    """
-    # Fast caption-based overrides before paying for a vision call
-    cap = caption.lower()
-    _travel_signals   = ["flight", "deal", "ticket", "miles", "points", "award", "which is better",
-                         "better price", "fare", "itinerary", "layover", "airline", "seat"]
-    _market_signals   = ["chart", "stock", "ticker", "etf", "crypto", "candle", "technical",
-                         "price action", "moving average", "support", "resistance", "trade"]
-    _infusion_signals = ["infusion", "clinic", "hospital", "patient", "report", "clinical",
-                         "data table", "census", "volume", "drip", "iv", "oncology", "pharmacy"]
-    _mortgage_signals = ["mortgage", "note", "lien", "upb", "deed", "trust", "real estate",
-                         "property", "foreclosure", "npl", "performer", "paperstac"]
-
-    if any(s in cap for s in _travel_signals):
-        return "travel"
-    if any(s in cap for s in _market_signals):
-        return "market"
-    if any(s in cap for s in _infusion_signals):
-        return "infusion"
-    if any(s in cap for s in _mortgage_signals):
-        return "mortgage"
-
-    # Vision call with enriched category set
-    prompt = (
-        "Look at this image carefully. The user's caption is: '{caption}'\n\n"
-        "Classify the image into exactly ONE of these categories:\n\n"
-        "- food       → meal, drink, snack, or food item\n"
-        "- event      → event info visible: date, time, venue, invite, RSVP, ticket, flyer, "
-        "               save-the-date, Luma/Eventbrite/Partiful screenshot\n"
-        "- receipt    → store receipt, bill, invoice, expense\n"
-        "- travel     → flight search results, boarding pass, seat map, hotel booking, "
-        "               award flight comparison, price comparison for flights/hotels\n"
-        "- market     → stock chart, candlestick chart, ticker performance, financial chart, "
-        "               portfolio screenshot, crypto chart, market data table\n"
-        "- infusion   → hospital report, clinical data table, infusion center census, "
-        "               patient volume data, pharmacy/IV data, healthcare ops data\n"
-        "- mortgage   → mortgage note, deed of trust, real estate document, note listing, "
-        "               Paperstac screenshot, UPB table, property data\n"
-        "- document   → contract, form, letter, article, handwritten note, general text\n"
-        "- general    → anything else\n\n"
-        "IMPORTANT rules:\n"
-        "- If the caption asks to compare or evaluate (e.g. 'which is better'), "
-        "  that hints at the domain — use it.\n"
-        "- Event images trump most other categories if a date+venue is clearly visible.\n"
-        "- The content of the image matters more than its format (screenshot vs photo).\n\n"
-        "Reply with ONLY the single category word. No explanation."
-    ).format(caption=caption)
-
-    try:
-        result = _vision_call(image_b64, prompt, max_tokens=10)
-        category = result.strip().lower().split()[0]
-        valid = {"food", "event", "receipt", "document", "travel", "market", "infusion", "mortgage", "general"}
-        return category if category in valid else "general"
-    except Exception as e:
-        logger.error(f"Image triage error: {e}")
-        return "general"
-
-
-def _get_meal_label() -> str:
-    """Return breakfast/lunch/dinner/snack based on current ET hour."""
-    import datetime
-    et_offset = datetime.timezone(datetime.timedelta(hours=-5))
-    hour = datetime.datetime.now(tz=et_offset).hour
-    if 5 <= hour < 11:
-        return "breakfast"
-    elif 11 <= hour < 15:
-        return "lunch"
-    elif 15 <= hour < 18:
-        return "snack"
-    else:
-        return "dinner"
-
-
-def _analyze_food_image(image_b64: str, caption: str = "") -> str:
-    """Nutrition analysis for food photos."""
-    meal_label = _get_meal_label()
-    prompt = (
-        "You are a nutrition coach for Justin Ngai, who is working to get from ~175 lbs to 165 lbs. "
-        "His priorities: hit ~150g protein/day, stay in a moderate calorie deficit, build muscle.\n\n"
-        f"This photo was sent at {meal_label} time — treat it as his {meal_label}.\n"
-        "Analyze this food photo carefully. Identify every item visible and estimate portions.\n\n"
-        f"User note: {caption}\n\n"
-        "Reply using EXACTLY this format:\n\n"
-        f"🍽 *{meal_label.capitalize()}: [Meal name — be specific]*\n\n"
-        "📊 *Nutrition Estimate*\n"
-        "• Calories: ~[X] kcal\n"
-        "• Protein: ~[X]g\n"
-        "• Carbs: ~[X]g\n"
-        "• Fat: ~[X]g\n"
-        "• Fiber: ~[X]g\n\n"
-        "🔍 *What's in it*\n"
-        "[Each ingredient with portion + cal/protein estimate]\n\n"
-        "✅ *Strengths* — [1-2 bullets: what this does well for Justin's goals]\n\n"
-        "⚠️ *Watch out* — [1-2 bullets: sodium, hidden calories, portions]\n\n"
-        "💡 *Coaching tip* — [One actionable suggestion for today's remaining meals]"
-    )
-    try:
-        result = _vision_call(image_b64, prompt, max_tokens=600)
-        log_health("meal", result[:300], note=f"{meal_label} photo log")
-        return f"{result}\n\n_📝 {meal_label.capitalize()} logged_"
-    except Exception as e:
-        return f"⚠️ Couldn't analyze photo: {e}\n\nTip: describe your meal in text instead."
-
-
-def _handle_event_image(image_b64: str, caption: str = "", user_id: int = 0) -> str:
-    """Extract event details from invite/save-the-date and auto-add to Google Calendar."""
-    prompt = (
-        "This image is an event invitation, save-the-date, or event flyer. "
-        "Extract ALL event details visible in the image.\n\n"
-        f"User caption: '{caption}'\n\n"
-        "Reply using EXACTLY this format:\n\n"
-        "📅 *Event Detected*\n\n"
-        "• *Name:* [Full event name]\n"
-        "• *Date:* [Date — spell it out, e.g. Saturday, June 14, 2026]\n"
-        "• *Time:* [Start time – End time, include timezone if shown]\n"
-        "• *Location:* [Venue name and/or address]\n"
-        "• *Hosted by:* [Host name(s) if visible]\n"
-        "• *RSVP/Details:* [Any RSVP info, link, or dress code]\n"
-        "• *Notes:* [Anything else relevant — attire, registry, gifts, etc.]\n\n"
-        "Then on a new line, write exactly:\n"
-        "CALENDAR_DATA: {\"title\": \"...\", \"date\": \"YYYY-MM-DD\", \"time\": \"HH:MM\", "
-        "\"end_time\": \"HH:MM\", \"location\": \"...\", \"description\": \"...\"}\n\n"
-        "If any field is unknown, use null for the JSON value. "
-        "Use 24-hour format for times in the JSON."
-    )
-    try:
-        result = _vision_call(image_b64, prompt, max_tokens=500)
-
-        import json, re
-        cal_response = ""
-        if "CALENDAR_DATA:" in result:
-            json_match = re.search(r'CALENDAR_DATA:\s*(\{.*?\})', result, re.DOTALL)
-            if json_match:
-                try:
-                    data = json.loads(json_match.group(1))
-                    # Cache event data so follow-up "add to calendar" works
-                    if user_id:
-                        _last_event_cache[user_id] = data
-                    # Auto-create calendar event immediately
-                    cal_response = _try_create_calendar_event(data)
-                except Exception:
-                    pass
-                # Always strip raw JSON from user-facing text
-                result = result[:result.index("CALENDAR_DATA:")].strip()
-
-        response = result
-        if cal_response:
-            response += f"\n\n{cal_response}"
-        else:
-            response += "\n\n_Tap 'add to calendar' to save this event._"
-        return response
-
-    except Exception as e:
-        return f"⚠️ Couldn't read event details: {e}"
-
-
-def _try_create_calendar_event(data: dict) -> str:
-    """Attempt to create a Google Calendar event from extracted image data."""
-    try:
-        from integrations.google.calendar_client import create_event
-        from integrations.google.auth import is_configured
-        if not is_configured():
-            return "_Google Calendar not configured — event not saved._"
-
-        import datetime as dt
-
-        title = data.get("title") or "Event from photo"
-        date_str = data.get("date")        # YYYY-MM-DD
-        time_str = data.get("time")        # HH:MM (24h)
-        end_time_str = data.get("end_time")
-        location = data.get("location") or ""
-        description = data.get("description") or "Added from photo via Executive AI Assistant"
-
-        if not date_str:
-            return "_Couldn't read the date clearly — reply 'add to calendar [date]' to save manually._"
-
-        if time_str:
-            start_iso = f"{date_str}T{time_str}:00"
-            if end_time_str:
-                end_iso = f"{date_str}T{end_time_str}:00"
-            else:
-                # default 2 hours
-                start_dt_obj = dt.datetime.strptime(start_iso, "%Y-%m-%dT%H:%M:%S")
-                end_iso = (start_dt_obj + dt.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S")
-        else:
-            # all-day event
-            start_iso = date_str
-            end_iso = date_str
-
-        created = create_event(
-            title=title,
-            start=start_iso,
-            end=end_iso,
-            location=location,
-            description=description,
-        )
-        if created:
-            html_link = created.get("htmlLink", "")
-            if html_link:
-                return f"✅ *Added to Google Calendar!*\n🔗 [View event]({html_link})"
-            return "✅ Event saved to Google Calendar."
-        return "_Couldn't save to calendar — try again or add manually._"
-    except Exception as e:
-        return f"_Couldn't auto-add to calendar: {e}_"
-
-
-def _handle_receipt_image(image_b64: str, caption: str = "") -> str:
-    """Extract and summarize receipt/expense data."""
-    prompt = (
-        "This is a receipt or bill. Extract all relevant information.\n\n"
-        f"User note: '{caption}'\n\n"
-        "Reply using EXACTLY this format:\n\n"
-        "🧾 *Receipt Summary*\n\n"
-        "• *Merchant:* [Store/restaurant name]\n"
-        "• *Date:* [Date of purchase]\n"
-        "• *Items:* [List key line items with prices]\n"
-        "• *Subtotal:* $[X]\n"
-        "• *Tax:* $[X]\n"
-        "• *Tip:* $[X] (if applicable)\n"
-        "• *Total:* $[X]\n"
-        "• *Payment:* [Cash / Card type if visible]\n\n"
-        "💡 *Category:* [Dining / Groceries / Transport / Shopping / Healthcare / Other]\n\n"
-        "Then ask: 'Want me to log this to your budget tracker?'"
-    )
-    try:
-        return _vision_call(image_b64, prompt, max_tokens=400)
-    except Exception as e:
-        return f"⚠️ Couldn't read receipt: {e}"
-
-
-def _handle_document_image(image_b64: str, caption: str = "") -> str:
-    """Extract and summarize text from a document photo."""
-    prompt = (
-        "This is a photo of a document, note, letter, or form. "
-        "Read all visible text carefully and provide:\n\n"
-        f"User note: '{caption}'\n\n"
-        "📄 *Document Summary*\n\n"
-        "• *Type:* [What kind of document is this?]\n"
-        "• *Key info:* [Most important details — names, dates, amounts, action items]\n"
-        "• *Full text:* [Transcribe all readable text]\n\n"
-        "💡 *Action needed:* [Is there anything that requires a response or action?]"
-    )
-    try:
-        return _vision_call(image_b64, prompt, max_tokens=500)
-    except Exception as e:
-        return f"⚠️ Couldn't read document: {e}"
-
-
-def _handle_general_image(image_b64: str, caption: str = "") -> str:
-    """Describe and respond to a general image."""
-    prompt = (
-        "You are Justin Ngai's executive AI assistant. He sent you this image.\n\n"
-        f"His caption/question: '{caption}'\n\n"
-        "Describe what you see and respond helpfully based on his caption. "
-        "If there's no caption, briefly describe the image and ask what he'd like to do with it. "
-        "Keep it concise — 3-5 sentences max."
-    )
-    try:
-        return _vision_call(image_b64, prompt, max_tokens=300)
-    except Exception as e:
-        return f"⚠️ Couldn't analyze image: {e}"
-
-
-_AGENT_IMAGE_PROMPTS = {
-    "travel": (
-        "You are Justin Ngai's travel hacking expert — miles, points, award flights, Asia-focused.\n\n"
-        "He sent you this image (likely a flight search, fare comparison, or booking screenshot).\n"
-        f"His question/caption: '{{caption}}'\n\n"
-        "Analyze what you see:\n"
-        "• Identify the routes, prices, or options shown\n"
-        "• Evaluate which is the better deal and WHY (price per mile, routing, cabin, layovers)\n"
-        "• Flag any sweet spots or traps\n"
-        "• Recommend the best option with 1-2 sentences of reasoning\n\n"
-        "Be direct and actionable. No fluff."
-    ),
-    "market": (
-        "You are a senior markets analyst (JP Morgan / Jane Street style).\n\n"
-        "Justin Ngai sent you this chart or market data screenshot.\n"
-        f"His question/caption: '{{caption}}'\n\n"
-        "Analyze what you see:\n"
-        "• Identify the ticker/asset, timeframe, and key levels\n"
-        "• Read the trend, momentum, and any pattern visible\n"
-        "• Give a specific trade idea: direction, entry, target, stop\n"
-        "• State the key risk\n\n"
-        "Lead with the trade thesis. Be precise and actionable."
-    ),
-    "infusion": (
-        "You are an infusion services operations expert advising Justin Ngai, "
-        "Director of Infusion Services at NewYork-Presbyterian.\n\n"
-        "He sent you this clinical/operational data image.\n"
-        f"His question/caption: '{{caption}}'\n\n"
-        "Analyze what you see:\n"
-        "• Summarize the key data points or metrics shown\n"
-        "• Identify any operational issues, trends, or anomalies\n"
-        "• Give 2-3 concrete recommendations for improving performance\n"
-        "• Flag anything that needs immediate attention\n\n"
-        "Be specific and operationally focused. Keep employer context confidential."
-    ),
-    "mortgage": (
-        "You are a mortgage note investor advising Justin Ngai on distressed/performing notes.\n\n"
-        "He sent you this mortgage note, document, or real estate listing image.\n"
-        f"His question/caption: '{{caption}}'\n\n"
-        "Analyze what you see:\n"
-        "• Extract key data: UPB, interest rate, lien position, property type, state\n"
-        "• Assess the note quality: performing/non-performing, first/second lien\n"
-        "• Flag red flags or deal-breakers\n"
-        "• Give a quick buy/pass/investigate-further recommendation with reasoning\n\n"
-        "Be direct. Focus on deal quality and risk."
-    ),
-}
-
-
-def _handle_image_with_agent(image_b64: str, caption: str, agent: str) -> str:
-    """Route an image to a specific agent for analysis."""
-    prompt_template = _AGENT_IMAGE_PROMPTS.get(agent)
-    if not prompt_template:
-        return _handle_general_image(image_b64, caption)
-    prompt = prompt_template.replace("{caption}", caption or "No caption provided")
-    try:
-        return _vision_call(image_b64, prompt, max_tokens=500)
-    except Exception as e:
-        return f"⚠️ {agent.capitalize()} agent couldn't analyze image: {e}"
 
 
 # ── Voice message handler ────────────────────────────────────────────────────
@@ -600,10 +221,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                            "save to calendar", "put it on calendar", "create the event",
                            "add the event", "save the event"]
     if any(p in text.lower() for p in _add_to_cal_phrases):
-        cached = _last_event_cache.get(user_id)
+        cached = _image_event_cache.get(user_id)
         if cached:
             cal_response = await asyncio.to_thread(_try_create_calendar_event, cached)
-            _last_event_cache.pop(user_id, None)
+            _image_event_cache.pop(user_id, None)
             response = cal_response or "_Couldn't add to calendar — try again._"
             await update.message.reply_text(response, parse_mode="Markdown")
             return
