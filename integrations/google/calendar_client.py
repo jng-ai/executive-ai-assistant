@@ -76,7 +76,8 @@ def list_events(days_ahead: int = 7) -> list[dict]:
 
 
 def create_event(title: str, start: str, end: str = None,
-                 description: str = "", location: str = "") -> dict | None:
+                 description: str = "", location: str = "",
+                 attendees: list[str] | None = None) -> dict | None:
     """
     Create a calendar event.
     start/end: ISO format strings like '2026-03-17T19:00:00' or '2026-03-17' for all-day.
@@ -105,7 +106,13 @@ def create_event(title: str, start: str, end: str = None,
             "start": start_obj,
             "end": end_obj,
         }
-        created = svc.events().insert(calendarId="jynpriority@gmail.com", body=event).execute()
+        if attendees:
+            event["attendees"] = [{"email": a} for a in attendees]
+        created = svc.events().insert(
+            calendarId="jynpriority@gmail.com",
+            body=event,
+            sendUpdates="all",
+        ).execute()
         return created
     except Exception as e:
         logger.error("Calendar create error: %s", e)

@@ -34,6 +34,40 @@ def is_confirmation_email(subject: str, snippet: str, sender: str) -> bool:
     return any(p in text for p in _CONFIRMATION_PATTERNS)
 
 
+def find_contact_emails(name: str) -> list[dict]:
+    """
+    Search both Gmail accounts for recent emails FROM `name` to find their email address.
+    Returns list of dicts: {email, display_name, recent_subject, found_in}.
+    Deduplicates by email address.
+    """
+    import re
+    contacts = []
+    seen = set()
+
+    for account, label in [("primary", "jynpriority@gmail.com"), ("secondary", "jngai5.3@gmail.com")]:
+        if not is_configured(account):
+            continue
+        try:
+            results = search_emails(f"from:{name}", max_results=5, account=account)
+            for e in results:
+                from_hdr = e.get("from", "")
+                m = re.search(r"<([^>]+)>", from_hdr)
+                email_addr = m.group(1).strip() if m else from_hdr.strip()
+                display = from_hdr.split("<")[0].strip().strip('"') or name
+                if "@" in email_addr and email_addr not in seen:
+                    seen.add(email_addr)
+                    contacts.append({
+                        "email": email_addr,
+                        "display_name": display,
+                        "recent_subject": e.get("subject", ""),
+                        "found_in": label,
+                    })
+        except Exception:
+            pass
+
+    return contacts
+
+
 def list_unread_all_accounts(max_results: int = 10) -> list[dict]:
     """
     Return recent unread emails from BOTH Gmail accounts.
@@ -70,13 +104,21 @@ def scan_confirmation_emails(max_results: int = 30) -> list[dict]:
     Scan both accounts for confirmation/RSVP emails from the last 7 days.
     Returns emails flagged as confirmations with is_confirmation=True.
     """
-    # Search last 7 days across both accounts (not just unread)
+    # Search last 14 days across both accounts (not just unread)
     results = []
+    query = (
+        "newer_than:14d "
+        "(subject:(confirmation OR confirmed OR \"you're registered\" OR reservation "
+        "OR booking OR ticket OR itinerary OR \"check-in\" OR \"boarding pass\") "
+        "OR from:(luma.com OR eventbrite.com OR partiful.com OR meetup.com "
+        "OR resy.com OR opentable.com OR tock.com OR united.com OR delta.com "
+        "OR aa.com OR marriott.com OR hilton.com OR airbnb.com))"
+    )
     for account, label in [("primary", "jynpriority@gmail.com"), ("secondary", "jngai5.3@gmail.com")]:
         if not is_configured(account):
             continue
         try:
-            emails = search_emails("newer_than:7d", max_results=max_results, account=account)
+            emails = search_emails(query, max_results=max_results, account=account)
             for e in emails:
                 e["account"] = label
             results.extend(emails)
