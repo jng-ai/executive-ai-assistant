@@ -36,6 +36,7 @@ FORECAST_URL    = "https://app.useorigin.com/forecast"
 
 DATA_DIR        = Path(__file__).parent.parent.parent / "data"
 SNAPSHOT_FILE   = DATA_DIR / "origin_snapshot.json"
+COOKIES_FILE    = DATA_DIR / "origin_cookies.json"
 
 
 def is_configured() -> bool:
@@ -71,6 +72,27 @@ def snapshot_age_hours() -> Optional[float]:
         return delta.total_seconds() / 3600
     except Exception:
         return None
+
+
+def save_cookies(cookies: list) -> None:
+    """Persist browser cookies to disk for reuse across scrape sessions."""
+    DATA_DIR.mkdir(exist_ok=True)
+    COOKIES_FILE.write_text(json.dumps(cookies, indent=2))
+    logger.info("Origin: %d cookies saved to %s", len(cookies), COOKIES_FILE)
+
+
+def load_cookies() -> list:
+    """Load saved cookies. Returns empty list if not found."""
+    if not COOKIES_FILE.exists():
+        return []
+    try:
+        return json.loads(COOKIES_FILE.read_text())
+    except Exception:
+        return []
+
+
+def cookies_exist() -> bool:
+    return COOKIES_FILE.exists() and bool(load_cookies())
 
 
 def _is_login_page(text: str) -> bool:
@@ -207,11 +229,7 @@ async def _scrape_async() -> dict:
 
 
 def scrape() -> dict:
-    """Synchronous wrapper — run the async scraper and save snapshot.
-    NOTE: Playwright headless login is unreliable for Origin (React SPA + auth).
-    Prefer refresh_from_chrome() which reads the already-logged-in Chrome session.
-    This fallback is kept for scheduled runs when Chrome may not be open.
-    """
+    """Headless login scrape. Unreliable due to bot detection — use scrape_with_cookies() instead."""
     if not is_configured():
         logger.warning("Origin: ORIGIN_EMAIL / ORIGIN_PASSWORD not set — skipping scrape")
         return {}
@@ -225,6 +243,82 @@ def scrape() -> dict:
     except Exception as e:
         logger.error(f"Origin scrape failed: {e}")
         return {}
+
+
+async def _scrape_with_cookies_async() -> dict:
+    """
+    Headless scrape using saved session cookies — no login required.
+    Cookies are populated by refresh_from_chrome() after a successful CDP session.
+    Returns {"error": "session_expired"} if cookies are stale and Origin redirects to login.
+    """
+    from playwright.async_api import async_playwright
+
+    cookies = load_cookies()
+    if not cookies:
+        return {"error": "no_cookies"}
+
+    snapshot = {}
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
+        ctx = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1440, "height": 900},
+        )
+        await ctx.add_cookies(cookies)
+        page = await ctx.new_page()
+
+        try:
+            for key, url in _ORIGIN_PAGES.items():
+                await page.goto(url, wait_until="networkidle", timeout=25000)
+                await page.wait_for_timeout(3000)
+                text = await page.evaluate("() => document.body.innerText")
+
+                # Detect session expiry — Origin redirects to login page
+                if _is_login_page(text):
+                    logger.warning("Origin: session expired — cookies no longer valid")
+                    await browser.close()
+                    return {"error": "session_expired"}
+
+                snapshot[key + "_text"] = text[:5000]
+                logger.info("Origin cookie-scrape: captured %s (%d chars)", key, len(text))
+
+            save_snapshot(snapshot)
+            logger.info("Origin: cookie-based scrape complete")
+        except Exception as e:
+            logger.error("Origin cookie-scrape error: %s", e)
+            snapshot["error"] = str(e)
+        finally:
+            await browser.close()
+
+    return snapshot
+
+
+def scrape_with_cookies() -> dict:
+    """
+    Autonomous scrape using saved session cookies — the primary daily refresh path.
+    No credentials or manual login required as long as cookies are valid.
+    Returns empty dict + logs a warning if cookies are missing or expired.
+    """
+    if not cookies_exist():
+        logger.info("Origin: no saved cookies — run /origin refresh from Chrome first")
+        return {"error": "no_cookies"}
+
+    try:
+        return asyncio.run(_scrape_with_cookies_async())
+    except RuntimeError:
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, _scrape_with_cookies_async()).result(timeout=120)
+    except Exception as e:
+        logger.error("Origin cookie scrape error: %s", e)
+        return {"error": str(e)}
 
 
 _CDP_URL = "http://localhost:9222"
@@ -284,7 +378,13 @@ async def _refresh_from_chrome_async() -> dict:
 
         if snap and "error" not in snap:
             save_snapshot(snap)
-            logger.info("Origin: Chrome CDP refresh complete — snapshot saved")
+            # Save cookies so future headless scrapes can skip login entirely
+            try:
+                cookies = await origin_page.context.cookies()
+                save_cookies(cookies)
+            except Exception as e:
+                logger.warning("Origin: could not save cookies: %s", e)
+            logger.info("Origin: Chrome CDP refresh complete — snapshot + cookies saved")
 
         return snap
 

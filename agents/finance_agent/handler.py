@@ -1074,23 +1074,49 @@ If cannot parse: {"type": null}"""
 
 
 def _origin_refresh() -> str:
-    """Pull live data from Chrome CDP session and return a status message."""
+    """
+    Refresh Origin data. Tries saved cookies first (autonomous), then Chrome CDP.
+    After a successful CDP scrape, cookies are saved for future autonomous runs.
+    """
     try:
-        from integrations.origin.scraper import refresh_from_chrome, snapshot_age_hours, get_finance_context
+        from integrations.origin.scraper import (
+            scrape_with_cookies, refresh_from_chrome,
+            cookies_exist, snapshot_age_hours, get_finance_context
+        )
+
+        # Try cookie-based headless scrape first (no Chrome needed)
+        if cookies_exist():
+            snap = scrape_with_cookies()
+            if snap and "error" not in snap:
+                age = snapshot_age_hours()
+                age_str = "just now" if not age or age < 0.1 else f"{age*60:.0f}m ago"
+                ctx = get_finance_context()
+                preview = ctx[:500] if ctx else "_No structured data extracted._"
+                return f"✅ *Origin refreshed* ({age_str})\n\n{preview}"
+            if snap.get("error") == "session_expired":
+                # Fall through to CDP below
+                pass
+
+        # Fall back to CDP (requires Chrome with --remote-debugging-port=9222)
         snap = refresh_from_chrome()
         if not snap or "error" in snap:
             err = snap.get("error", "no data") if snap else "no data"
             return (
                 "❌ *Origin refresh failed*\n"
                 f"`{err}`\n\n"
-                "_Make sure Chrome is running with CDP enabled.\n"
-                "Run: `scripts/start_chrome_cdp.sh`_"
+                "_Run `scripts/start_chrome_cdp.sh`, log into Origin, then try again.\n"
+                "After that first login, daily refreshes will run automatically._"
             )
+
         age = snapshot_age_hours()
         age_str = "just now" if not age or age < 0.1 else f"{age*60:.0f}m ago"
         ctx = get_finance_context()
         preview = ctx[:500] if ctx else "_No structured data extracted._"
-        return f"✅ *Origin refreshed* ({age_str})\n\n{preview}"
+        return (
+            f"✅ *Origin refreshed via Chrome* ({age_str})\n"
+            "_Session saved — future refreshes will run automatically._\n\n"
+            f"{preview}"
+        )
     except Exception as e:
         return f"❌ Origin refresh error: {e}"
 

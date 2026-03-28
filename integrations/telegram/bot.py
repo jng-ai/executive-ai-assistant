@@ -436,19 +436,38 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _scheduled_origin_refresh(context: ContextTypes.DEFAULT_TYPE):
     """Daily Origin Financial data refresh — runs at 8:15 AM ET.
-    Tries Chrome CDP first (no credentials needed), falls back to headless login.
-    Sends a brief alert if budget is significantly over target.
+    Uses saved session cookies (no login required).
+    Alerts if cookies are expired and re-auth is needed.
     """
     try:
-        from integrations.origin.scraper import refresh_from_chrome, scrape, is_configured, load_snapshot
+        from integrations.origin.scraper import scrape_with_cookies, load_snapshot
 
-        snap = await asyncio.to_thread(refresh_from_chrome)
-        if not snap or "error" in snap:
-            # Chrome not available — fall back to headless login
-            if is_configured():
-                logger.info("Origin: CDP unavailable, falling back to headless login")
-                await asyncio.to_thread(scrape)
-            snap = load_snapshot()
+        snap = await asyncio.to_thread(scrape_with_cookies)
+
+        if snap.get("error") == "session_expired":
+            chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+            if chat_id:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "🔑 *Origin session expired*\n\n"
+                        "Run `scripts/start_chrome_cdp.sh`, log into Origin, "
+                        "then send `/origin refresh` to re-authenticate.\n"
+                        "_After that, daily auto-refresh resumes._"
+                    ),
+                    parse_mode="Markdown",
+                )
+            return
+
+        if snap.get("error") == "no_cookies":
+            logger.info("Origin: no cookies yet — skipping scheduled refresh")
+            return
+
+        if "error" in snap:
+            logger.error("Origin scheduled refresh error: %s", snap["error"])
+            return
+
+        snap = load_snapshot()
 
         # Check for budget overrun — alert if over 120%
         text = snap.get("dashboard_text", "")
