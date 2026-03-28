@@ -48,9 +48,24 @@ def get_model() -> str:
     return os.environ.get("LLM_MODEL", default_models.get(provider, "llama-3.3-70b-versatile"))
 
 
-def chat(system: str, user: str, max_tokens: int = 800) -> str:
-    """Single-turn chat. Works with Groq, Ollama, or Anthropic."""
+def chat(system: str, user: str, max_tokens: int = 800,
+         history: list[dict] | None = None) -> str:
+    """
+    Chat with optional multi-turn history.
+
+    Args:
+        system:    System prompt.
+        user:      Current user message.
+        max_tokens: Response length cap.
+        history:   Optional prior turns as OpenAI-style message dicts,
+                   e.g. [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}, ...]
+                   Obtained from core.conversation.get_history_for_llm().
+    """
     provider = os.environ.get("LLM_PROVIDER", "groq").lower()
+
+    # Build the messages list: system → prior turns → current user message
+    prior = history or []
+    current = {"role": "user", "content": user}
 
     if provider == "anthropic":
         from anthropic import Anthropic
@@ -59,7 +74,7 @@ def chat(system: str, user: str, max_tokens: int = 800) -> str:
             model=get_model(),
             max_tokens=max_tokens,
             system=system,
-            messages=[{"role": "user", "content": user}],
+            messages=[*prior, current],
         )
         return resp.content[0].text
 
@@ -69,7 +84,8 @@ def chat(system: str, user: str, max_tokens: int = 800) -> str:
         max_tokens=max_tokens,
         messages=[
             {"role": "system", "content": system},
-            {"role": "user", "content": user},
+            *prior,
+            current,
         ],
     )
     return resp.choices[0].message.content

@@ -278,10 +278,12 @@ def handle(message: str) -> str:
 
     # ── General question ────────────────────────────────────────────────────
     else:
+        from core.conversation import get_history_for_llm
         events = list_events(days_ahead=14)
         event_summary = format_events(events[:10]) if events else "No upcoming events"
         context = f"Justin's upcoming calendar:\n{event_summary}\n\nQuestion: {message}"
-        return chat(SYSTEM, context, max_tokens=400)
+        history = get_history_for_llm(n=3)
+        return chat(SYSTEM, context, max_tokens=400, history=history)
 
 
 def run_morning_briefing() -> str:

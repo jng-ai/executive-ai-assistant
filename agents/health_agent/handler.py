@@ -539,9 +539,11 @@ def handle(message: str) -> str:
         return log_response
 
     # ── Fallback: general health question ─────────────────────────────────────
+    from core.conversation import get_history_for_llm
     summary_data = get_health_summary(7)
     context = f"Justin's recent health logs (7 days):\n{summary_data}\n\nQuestion: {message}"
-    return chat(SYSTEM, context, max_tokens=400)
+    history = get_history_for_llm(n=3)
+    return chat(SYSTEM, context, max_tokens=400, history=history)
 
 
 # ── Summary builder ───────────────────────────────────────────────────────────

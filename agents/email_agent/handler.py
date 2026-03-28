@@ -343,11 +343,13 @@ def handle(message: str) -> str:
 
     # ── General question ─────────────────────────────────────────────────────
     else:
+        from core.conversation import get_history_for_llm
         emails = list_unread(max_results=5)
         _last_email_list = emails
         email_summary = format_emails(emails, triage=True) if emails else "Inbox is clear"
         context = f"Justin's recent unread emails:\n{email_summary}\n\nQuestion: {message}"
-        return chat(SYSTEM, context, max_tokens=400)
+        history = get_history_for_llm(n=3)
+        return chat(SYSTEM, context, max_tokens=400, history=history)
 
 
 def run_morning_digest() -> str:

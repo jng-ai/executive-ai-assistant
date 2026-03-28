@@ -32,9 +32,21 @@ Return ONLY valid JSON. No commentary. No markdown. Example:
 If multiple intents fit, pick the most specific one."""
 
 
-def classify(message: str) -> dict:
-    """Classify a user message into a structured intent."""
-    raw = chat(ROUTER_PROMPT, message, max_tokens=256)
+def classify(message: str, context: str = "") -> dict:
+    """
+    Classify a user message into a structured intent.
+
+    Args:
+        message: The raw user message.
+        context: Optional recent conversation context (plain text) to resolve
+                 pronouns like "that email", "it", "him", "cancel that".
+    """
+    user_content = (
+        f"Recent conversation (for context only — do NOT classify this, only the last message):\n"
+        f"{context}\n\n"
+        f"Classify this message: {message}"
+    ) if context else message
+    raw = chat(ROUTER_PROMPT, user_content, max_tokens=256)
 
     # Strip markdown fences if model wraps in ```json
     raw = raw.strip()
