@@ -72,6 +72,22 @@ def get_stock_data(ticker: str) -> dict:
         return {"ticker": ticker, "error": str(e)}
 
 
+# Financial/tax/econ acronyms that look like tickers but are NOT — never look up as stocks
+_FINANCE_TERMS = {
+    "SALT", "ROTH", "MAGI", "FICA", "COLA", "FDIC", "SIPC", "HELOC", "QSBS",
+    "BOLI", "COLI", "SEPP", "UBTI", "NIIT", "AMT", "QBI", "RMD", "MRD",
+    "RSU", "ISO", "NSO", "ESPP", "ESOP", "NUA", "CRUT", "CRAT", "GRAT",
+    "ILIT", "SLAT", "IDGT", "QTIP", "GRAT", "SPAC", "SPV", "SPE", "NAV",
+    "AUM", "TER", "MER", "OER", "YTM", "YTC", "YTW", "DTC", "ACH", "WIRE",
+    "TIPS", "TBIL", "TBILLS", "ZIRP", "QE", "QT", "FFR", "FOMC", "CPI",
+    "PPI", "PCE", "NFP", "ISM", "PMI", "GDP", "GNP", "EBIT", "EBITDA",
+    "FCF", "EPS", "BPS", "DPS", "ROE", "ROA", "ROIC", "DCF", "LBO", "MBO",
+    "IPO", "SPO", "PIPE", "DRIP", "DCA", "LIFO", "FIFO", "HIFO", "VLOOKUP",
+    "REIT", "MLP", "BDC", "CEF", "ETN", "ETP", "ABS", "MBS", "CDO", "CLO",
+    "CDS", "IRS", "SEC", "FINRA", "CFTC", "OCC", "FDIC", "NCUA", "HMO", "PPO",
+    "HSA", "FSA", "HRA", "COBRA", "ACA", "CHIP", "SNAP", "SSI", "SSDI",
+}
+
 # Common English words that match the ticker pattern (2-5 alpha chars) — never treat as tickers
 _COMMON_WORDS = {
     "A", "AN", "AS", "AT", "BE", "BY", "DO", "GO", "HE", "IF", "IN", "IS",
@@ -130,10 +146,55 @@ def _mark_flags_reviewed(tickers: list[str]) -> None:
         pass
 
 
+_COMPANY_TO_TICKER = {
+    "micron": "MU", "nvidia": "NVDA", "apple": "AAPL", "amazon": "AMZN",
+    "google": "GOOGL", "alphabet": "GOOGL", "meta": "META", "microsoft": "MSFT",
+    "tesla": "TSLA", "netflix": "NFLX", "palantir": "PLTR", "coinbase": "COIN",
+    "berkshire": "BRK-B", "jpmorgan": "JPM", "goldman": "GS", "morgan stanley": "MS",
+    "unitedhealth": "UNH", "eli lilly": "LLY", "abbvie": "ABBV", "pfizer": "PFE",
+    "moderna": "MRNA", "johnson": "JNJ", "merck": "MRK", "bristol": "BMY",
+    "intuitive surgical": "ISRG", "veeva": "VEEV", "iqvia": "IQV",
+    "blackrock": "BLK", "vanguard": "N/A", "fidelity": "N/A",
+}
+
+
+def _search_holding_in_origin(name_or_ticker: str) -> str | None:
+    """Search Origin investment text for a company name or ticker. Returns matching line or None."""
+    try:
+        from integrations.origin.scraper import load_snapshot
+        snap = load_snapshot()
+        if not snap:
+            return None
+        invest_text = snap.get("investments_text", "") + "\n" + snap.get("equity_text", "")
+        name_lower = name_or_ticker.lower()
+        for line in invest_text.split("\n"):
+            if name_lower in line.lower():
+                return line.strip()
+        return None
+    except Exception:
+        return None
+
+
 def handle(message: str) -> str:
     msg_lower = message.lower()
 
-    # Finance board flagged ideas — surface them for review
+    # ── Explain/define mode — financial terms, concepts, not ticker lookup ────
+    explain_triggers = ["explain", "what is", "what's", "what are", "define", "tell me about",
+                        "what does", "meaning of", "how does", "how do"]
+    if any(msg_lower.startswith(t) or f" {t} " in msg_lower for t in explain_triggers):
+        # Only skip if there's no obvious ticker intent alongside (e.g. "explain why NVDA dropped")
+        has_ticker_intent = any(kw in msg_lower for kw in ["dropped", "rallied", "earnings", "price", "buy", "sell"])
+        if not has_ticker_intent:
+            from agents.finance_agent.handler import SYSTEM as FINANCE_SYSTEM, JUSTIN_CONTEXT
+            return chat(
+                f"You are Justin's financial board advisor (JP Morgan + Jane Street). "
+                f"Explain financial, tax, and investment terms clearly and concisely. "
+                f"Relate them to Justin's situation when relevant.\n\n{JUSTIN_CONTEXT}",
+                message,
+                max_tokens=600,
+            )
+
+    # ── Finance board flagged ideas ────────────────────────────────────────────
     if any(kw in msg_lower for kw in ["flagged ideas", "finance flags", "board flags",
                                        "what did finance flag", "pending ideas"]):
         flags = _get_flagged_ideas()
@@ -150,7 +211,34 @@ def handle(message: str) -> str:
         _mark_flags_reviewed(tickers)
         return "\n".join(lines)
 
-    # Origin-specific portfolio request — skip ticker detection, go straight to Origin data
+    # ── "Do I have / do I own X" — check Origin holdings ─────────────────────
+    holding_triggers = ["do i have", "do i own", "am i holding", "am i in", "is it in my",
+                        "do i hold", "check my holding", "in my portfolio"]
+    if any(t in msg_lower for t in holding_triggers):
+        origin_ctx = _origin_portfolio_context()
+        # Also check raw snapshot text for the specific name
+        for company, ticker in _COMPANY_TO_TICKER.items():
+            if company in msg_lower or ticker.lower() in msg_lower:
+                hit = _search_holding_in_origin(company) or _search_holding_in_origin(ticker)
+                if hit:
+                    context = (
+                        f"User asked: {message}\n\n"
+                        f"Found in Origin portfolio data: '{hit}'\n\n"
+                        f"Full portfolio context:\n{origin_ctx}"
+                    )
+                    return chat(SYSTEM, context + "\nConfirm if Justin holds this position and give a brief current analysis.", max_tokens=500)
+                else:
+                    context = (
+                        f"User asked: {message}\n\n"
+                        f"Searched Origin portfolio data — '{company.title()}' ({ticker}) not found in investment text.\n\n"
+                        f"Portfolio context:\n{origin_ctx}"
+                    )
+                    return chat(SYSTEM, context + "\nTell Justin clearly whether you can confirm this holding, and note if Origin data may be incomplete.", max_tokens=400)
+        # Generic holding check with full origin context
+        if origin_ctx:
+            return chat(SYSTEM, f"User asked: {message}\n\nOrigin portfolio data:\n{origin_ctx}\nAnswer based on the actual holdings shown.", max_tokens=600)
+
+    # ── Portfolio / holdings overview ─────────────────────────────────────────
     if any(kw in msg_lower for kw in ["origin", "my portfolio", "my holdings", "my investments",
                                        "portfolio update", "portfolio review", "what do i own",
                                        "what am i invested in"]):
@@ -164,14 +252,22 @@ def handle(message: str) -> str:
             )
             return chat(SYSTEM, prompt, max_tokens=900)
 
-    # Check if asking about a specific ticker
+    # ── Check if asking about a specific ticker ────────────────────────────────
+    # Map company names to tickers first
+    resolved_tickers = []
+    for company, ticker in _COMPANY_TO_TICKER.items():
+        if company in msg_lower and ticker != "N/A":
+            resolved_tickers.append(ticker)
+
     words = message.upper().split()
-    tickers = [
+    detected = [
         w.strip("$?,!.") for w in words
         if 2 <= len(w.strip("$?,!.")) <= 5
         and w.strip("$?,!.").isalpha()
         and w.strip("$?,!.") not in _COMMON_WORDS
+        and w.strip("$?,!.") not in _FINANCE_TERMS
     ]
+    tickers = list(dict.fromkeys(resolved_tickers + detected))  # resolved first, deduplicated
 
     if tickers and not any(kw in msg_lower for kw in ["scan", "ideas", "opportunities", "watchlist", "portfolio"]):
         # Analyze specific ticker(s)
