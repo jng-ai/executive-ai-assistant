@@ -373,19 +373,18 @@ async def _refresh_from_chrome_async() -> dict:
         except Exception as e:
             logger.error("Origin CDP page scrape error: %s", e)
             snap["error"] = str(e)
-        finally:
-            await browser.close()
 
         if snap and "error" not in snap:
             save_snapshot(snap)
-            # Save cookies so future headless scrapes can skip login entirely
+            # Save cookies before closing browser
             try:
-                cookies = await origin_page.context.cookies()
+                cookies = await ctx.cookies()
                 save_cookies(cookies)
             except Exception as e:
                 logger.warning("Origin: could not save cookies: %s", e)
             logger.info("Origin: Chrome CDP refresh complete — snapshot + cookies saved")
 
+        await browser.close()
         return snap
 
 
