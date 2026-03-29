@@ -7,8 +7,20 @@ Data sources:
 """
 
 import time
+import json
+import logging
+import datetime
+from pathlib import Path
 from core.llm import chat
 from core.search import search, format_results
+
+logger = logging.getLogger(__name__)
+
+DATA_DIR      = Path(__file__).parent.parent.parent / "data"
+DCA_STATE_FILE = DATA_DIR / "dca_alert_state.json"
+
+# Target ETFs for DCA recommendations
+DCA_ETFS = ["SPY", "QQQ", "VTI", "VEA"]
 
 SYSTEM = """You are Justin Ngai's personal Wall Street research analyst.
 
@@ -146,6 +158,251 @@ def _mark_flags_reviewed(tickers: list[str]) -> None:
         pass
 
 
+# ── DCA Monitor ──────────────────────────────────────────────────────────────
+
+def _calculate_rsi(closes: list, period: int = 14) -> float | None:
+    """Calculate RSI from a list of closing prices."""
+    if len(closes) < period + 1:
+        return None
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        delta = closes[i] - closes[i - 1]
+        gains.append(max(delta, 0))
+        losses.append(max(-delta, 0))
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return round(100 - (100 / (1 + rs)), 1)
+
+
+def _get_market_indicators() -> dict:
+    """
+    Fetch live market data: VIX, SPY/QQQ/VTI price, drawdown from 52w high,
+    day change %, and RSI(14). Returns dict of indicators.
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        return {"error": "yfinance not installed"}
+
+    indicators = {}
+
+    # VIX
+    try:
+        vix = yf.Ticker("^VIX")
+        vix_hist = vix.history(period="5d")
+        if not vix_hist.empty:
+            indicators["vix"] = round(float(vix_hist["Close"].iloc[-1]), 2)
+            if len(vix_hist) >= 2:
+                indicators["vix_prev"] = round(float(vix_hist["Close"].iloc[-2]), 2)
+                indicators["vix_change"] = round(indicators["vix"] - indicators["vix_prev"], 2)
+    except Exception as e:
+        logger.warning("VIX fetch failed: %s", e)
+
+    # Broad market ETFs
+    for ticker in ["SPY", "QQQ", "VTI"]:
+        try:
+            t = yf.Ticker(ticker)
+            info = t.info
+            hist = t.history(period="30d")
+            if hist.empty:
+                continue
+
+            closes = hist["Close"].tolist()
+            current = round(closes[-1], 2)
+            prev    = round(closes[-2], 2) if len(closes) >= 2 else current
+            high_52w = info.get("fiftyTwoWeekHigh") or max(closes)
+            drawdown_pct = round((current - high_52w) / high_52w * 100, 2)  # negative = below high
+            day_chg_pct  = round((current - prev) / prev * 100, 2)
+            rsi = _calculate_rsi(closes)
+
+            indicators[ticker] = {
+                "price":        current,
+                "prev_close":   prev,
+                "day_chg_pct":  day_chg_pct,
+                "high_52w":     round(high_52w, 2),
+                "drawdown_pct": drawdown_pct,  # negative number, e.g. -12.3
+                "rsi":          rsi,
+            }
+        except Exception as e:
+            logger.warning("%s fetch failed: %s", ticker, e)
+
+    indicators["_fetched_at"] = datetime.datetime.now().isoformat()
+    return indicators
+
+
+def _score_dca_signal(indicators: dict) -> tuple[int, str, str, str]:
+    """
+    Score market conditions for a DCA opportunity.
+    Returns (score, level_emoji, level_name, recommendation).
+    """
+    score = 0
+    reasons = []
+
+    vix = indicators.get("vix", 0)
+    spy = indicators.get("SPY", {})
+    spy_drawdown = abs(spy.get("drawdown_pct", 0))  # positive = % below 52w high
+    spy_rsi      = spy.get("rsi")
+    spy_day_chg  = spy.get("day_chg_pct", 0)
+
+    # VIX component (0–40 pts)
+    if vix >= 40:
+        score += 40; reasons.append(f"VIX {vix:.1f} — extreme panic (≥40)")
+    elif vix >= 35:
+        score += 32; reasons.append(f"VIX {vix:.1f} — very high fear (≥35)")
+    elif vix >= 30:
+        score += 24; reasons.append(f"VIX {vix:.1f} — elevated fear (≥30)")
+    elif vix >= 25:
+        score += 16; reasons.append(f"VIX {vix:.1f} — above normal (≥25)")
+    elif vix >= 20:
+        score += 8;  reasons.append(f"VIX {vix:.1f} — slightly elevated (≥20)")
+
+    # Drawdown from 52w high (0–40 pts)
+    if spy_drawdown >= 20:
+        score += 40; reasons.append(f"SPY {spy_drawdown:.1f}% below 52w high — bear market territory")
+    elif spy_drawdown >= 15:
+        score += 30; reasons.append(f"SPY {spy_drawdown:.1f}% below 52w high — correction deepening")
+    elif spy_drawdown >= 10:
+        score += 20; reasons.append(f"SPY {spy_drawdown:.1f}% below 52w high — correction territory")
+    elif spy_drawdown >= 5:
+        score += 10; reasons.append(f"SPY {spy_drawdown:.1f}% below 52w high — pullback")
+    elif spy_drawdown >= 3:
+        score += 5;  reasons.append(f"SPY {spy_drawdown:.1f}% below 52w high — minor dip")
+
+    # RSI component (0–20 pts)
+    if spy_rsi is not None:
+        if spy_rsi < 30:
+            score += 20; reasons.append(f"SPY RSI {spy_rsi} — oversold (< 30)")
+        elif spy_rsi < 35:
+            score += 12; reasons.append(f"SPY RSI {spy_rsi} — approaching oversold")
+        elif spy_rsi < 40:
+            score += 6;  reasons.append(f"SPY RSI {spy_rsi} — weakening momentum")
+
+    # Sharp single-day drop bonus
+    if spy_day_chg <= -3:
+        score += 10; reasons.append(f"SPY down {spy_day_chg:.1f}% today — sharp single-day drop")
+    elif spy_day_chg <= -2:
+        score += 5;  reasons.append(f"SPY down {spy_day_chg:.1f}% today")
+
+    # Determine level
+    if score >= 70:
+        level_emoji = "🔴"
+        level_name  = "STRONG BUY"
+        rec = (
+            "Deploy *full monthly DCA allocation + reserve cash*. "
+            "Scale into SPY/VTI/QQQ over 1–2 weeks. "
+            "This is a high-conviction entry — VIX panic + significant drawdown historically precedes strong recoveries."
+        )
+    elif score >= 50:
+        level_emoji = "🟠"
+        level_name  = "DCA SIGNAL"
+        rec = (
+            "Deploy *50% of your monthly DCA allocation now* into SPY/VTI. "
+            "Hold remaining 50% to average in over next 2–3 weeks if weakness continues."
+        )
+    elif score >= 25:
+        level_emoji = "🟡"
+        level_name  = "WATCH"
+        rec = (
+            "Consider deploying *25% of monthly allocation* as a starter position. "
+            "Set alerts for VIX ≥ 30 or SPY drawdown ≥ 10% for larger deployment."
+        )
+    else:
+        level_emoji = "🟢"
+        level_name  = "NORMAL"
+        rec = "Market within normal range. Stick to your scheduled DCA. No action needed."
+
+    return score, level_emoji, level_name, rec, reasons
+
+
+def _load_dca_state() -> dict:
+    if DCA_STATE_FILE.exists():
+        try:
+            return json.loads(DCA_STATE_FILE.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _save_dca_state(state: dict):
+    DATA_DIR.mkdir(exist_ok=True)
+    DCA_STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+def _format_dca_report(indicators: dict, score: int, emoji: str,
+                        level: str, rec: str, reasons: list) -> str:
+    """Format a phone-friendly DCA signal report."""
+    spy  = indicators.get("SPY", {})
+    qqq  = indicators.get("QQQ", {})
+    vti  = indicators.get("VTI", {})
+    vix  = indicators.get("vix", "?")
+    vix_chg = indicators.get("vix_change", 0)
+
+    vix_arrow = "📈" if vix_chg > 0 else "📉" if vix_chg < 0 else "➡️"
+
+    lines = [
+        f"{emoji} *DCA SIGNAL: {level}* (score {score}/100)\n",
+        f"📊 *Market Snapshot*",
+        f"• VIX: {vix} {vix_arrow} ({'+' if vix_chg >= 0 else ''}{vix_chg:.1f} vs yesterday)",
+        f"• SPY: ${spy.get('price','?')} | {spy.get('day_chg_pct',0):+.1f}% today | "
+        f"{spy.get('drawdown_pct',0):.1f}% from 52w high | RSI {spy.get('rsi','?')}",
+        f"• QQQ: ${qqq.get('price','?')} | {qqq.get('day_chg_pct',0):+.1f}% today | "
+        f"{qqq.get('drawdown_pct',0):.1f}% from 52w high",
+        f"• VTI: ${vti.get('price','?')} | {vti.get('day_chg_pct',0):+.1f}% today",
+        f"\n📋 *Why this signal:*",
+    ]
+    for r in reasons:
+        lines.append(f"  • {r}")
+
+    lines += [
+        f"\n💡 *Recommendation:*",
+        rec,
+        f"\n🎯 *Target ETFs:* SPY (S&P 500) · VTI (Total Market) · QQQ (Nasdaq)",
+        f"_Score methodology: VIX level (40pts) + drawdown from 52w high (40pts) + RSI (20pts)_",
+    ]
+    return "\n".join(lines)
+
+
+def run_vix_dca_check(force: bool = False) -> str:
+    """
+    Check market conditions for a DCA opportunity.
+    Returns alert string if signal ≥ WATCH, empty string if market is normal.
+    Won't re-alert for the same level on the same day (dedup) unless force=True.
+    """
+    indicators = _get_market_indicators()
+    if "error" in indicators:
+        logger.error("DCA check: %s", indicators["error"])
+        return ""
+
+    result = _score_dca_signal(indicators)
+    score, emoji, level, rec, reasons = result
+
+    # Skip if normal
+    if level == "NORMAL" and not force:
+        logger.info("DCA check: market normal (score %d) — no alert", score)
+        return ""
+
+    # Dedup — don't repeat same level same day
+    today = datetime.date.today().isoformat()
+    state = _load_dca_state()
+    if not force and state.get("last_alert_date") == today and state.get("last_level") == level:
+        logger.info("DCA check: already alerted %s today — skipping", level)
+        return ""
+
+    # Save state
+    _save_dca_state({
+        "last_alert_date": today,
+        "last_level": level,
+        "last_score": score,
+        "last_vix": indicators.get("vix"),
+        "_updated": datetime.datetime.now().isoformat(),
+    })
+
+    return _format_dca_report(indicators, score, emoji, level, rec, reasons)
+
+
 _COMPANY_TO_TICKER = {
     "micron": "MU", "nvidia": "NVDA", "apple": "AAPL", "amazon": "AMZN",
     "google": "GOOGL", "alphabet": "GOOGL", "meta": "META", "microsoft": "MSFT",
@@ -177,6 +434,13 @@ def _search_holding_in_origin(name_or_ticker: str) -> str | None:
 
 def handle(message: str) -> str:
     msg_lower = message.lower()
+
+    # ── DCA signal check ──────────────────────────────────────────────────────
+    if any(kw in msg_lower for kw in ["dca signal", "dca check", "buy the dip", "should i dca",
+                                       "market dip", "vix check", "vix alert", "market signal",
+                                       "dca alert", "is it a good time to buy", "broad market"]):
+        result = run_vix_dca_check(force=True)
+        return result or "🟢 *DCA Check: NORMAL*\n\nMarket is within normal range — no elevated signal. Stick to your scheduled DCA."
 
     # ── Explain/define mode — financial terms, concepts, not ticker lookup ────
     explain_triggers = ["explain", "what is", "what's", "what are", "define", "tell me about",

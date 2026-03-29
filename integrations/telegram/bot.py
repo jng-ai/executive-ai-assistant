@@ -20,6 +20,7 @@ from agents.travel_agent.handler import handle as travel_handle
 from agents.health_agent.handler import handle as health_handle, run_daily_nudge, run_lunch_nudge, run_dinner_nudge, run_breakfast_nudge
 from agents.social_agent.handler import handle as social_handle, run_event_scan
 from agents.finance_agent.handler import handle as finance_handle, run_weekly_board_briefing
+from agents.investment_agent.handler import run_vix_dca_check
 from agents.bonus_alert.handler import handle as bonus_alert_handle, run_bonus_scan
 from agents.market_agent.handler import handle as market_handle
 from agents.calendar_agent.handler import handle as calendar_handle, run_morning_briefing, run_eod_calendar
@@ -642,6 +643,18 @@ async def _scheduled_confirmation_scan(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Confirmation scan error: {e}")
 
 
+async def _scheduled_dca_check(context: ContextTypes.DEFAULT_TYPE):
+    """Daily 9:35 AM ET — check VIX + drawdown for DCA opportunity. Silent if market is normal."""
+    try:
+        result = await asyncio.to_thread(run_vix_dca_check)
+        if result:
+            chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+            if chat_id:
+                await context.bot.send_message(chat_id=chat_id, text=result, parse_mode="Markdown")
+    except Exception as e:
+        logger.error("DCA check error: %s", e)
+
+
 async def _scheduled_board_briefing(context: ContextTypes.DEFAULT_TYPE):
     """Weekly finance board meeting — Sunday 6 PM ET. Full intelligence report."""
     try:
@@ -787,6 +800,14 @@ def run_bot():
             name="daily_confirmation_scan",
         )
         logger.info("Scheduled daily confirmation scan at 8:10 AM ET")
+
+        # VIX / DCA alert — 9:35 AM ET daily (post market open, silent if normal)
+        job_queue.run_daily(
+            _scheduled_dca_check,
+            time=dt.time(hour=9, minute=35, tzinfo=ET),
+            name="daily_dca_check",
+        )
+        logger.info("Scheduled daily VIX/DCA check at 9:35 AM ET")
 
         # Weekly financial board briefing — Sundays 6 PM ET
         job_queue.run_daily(
