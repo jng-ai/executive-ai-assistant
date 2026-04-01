@@ -110,8 +110,8 @@ class TestUpdateEventStatus:
     def test_update_status_no_key_is_noop(self, monkeypatch):
         monkeypatch.delenv("NOTION_API_KEY", raising=False)
         from integrations.notion import client
-        # Should not raise
-        client.update_event_status("page-abc", "Attended")
+        result = client.update_event_status("page-abc", "Attended")
+        assert result is False
 
 
 class TestGetProgress:
@@ -187,6 +187,49 @@ class TestAddFriendRsvp:
             from integrations.notion import client
             result = client.add_friend_rsvp("page-abc", "NewPerson")
         assert result is False
+
+
+class TestGetEventByRsvpLink:
+    def test_returns_parsed_event_when_found(self, mock_notion_env):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "results": [{
+                "id": "page-xyz",
+                "properties": {
+                    "Name": {"title": [{"plain_text": "Brooklyn 5K Run"}]},
+                    "Date": {"date": {"start": "2026-04-05T10:00:00"}},
+                    "Status": {"select": {"name": "New"}},
+                    "Category": {"select": {"name": "Fitness & Outdoors"}},
+                    "Price": {"number": 0},
+                    "RSVP Link": {"url": "https://lu.ma/bk5k"},
+                    "Address": {"rich_text": [{"plain_text": "Prospect Park"}]},
+                    "Venue": {"rich_text": [{"plain_text": "Prospect Park"}]},
+                    "Source": {"select": {"name": "Luma"}},
+                    "End Time": {"date": None},
+                    "Friends Going": {"rich_text": []},
+                    "Registered": {"checkbox": False},
+                    "Neighborhood": {"select": {"name": "Brooklyn"}},
+                    "Cal Event ID": {"rich_text": []},
+                    "Notes": {"rich_text": []},
+                }
+            }]
+        }
+        mock_resp.raise_for_status = MagicMock()
+        with patch("integrations.notion.client.requests.post", return_value=mock_resp):
+            from integrations.notion import client
+            result = client.get_event_by_rsvp_link("https://lu.ma/bk5k")
+        assert result is not None
+        assert result["notion_id"] == "page-xyz"
+        assert result["name"] == "Brooklyn 5K Run"
+
+    def test_returns_none_when_not_found(self, mock_notion_env):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"results": []}
+        mock_resp.raise_for_status = MagicMock()
+        with patch("integrations.notion.client.requests.post", return_value=mock_resp):
+            from integrations.notion import client
+            result = client.get_event_by_rsvp_link("https://lu.ma/notfound")
+        assert result is None
 
 
 class TestGetFriendsGoing:

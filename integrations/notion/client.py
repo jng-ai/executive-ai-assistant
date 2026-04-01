@@ -6,6 +6,7 @@ One API key serves all agents.
 """
 
 import os
+import re
 import json
 import datetime
 import requests
@@ -595,13 +596,12 @@ def add_friend_rsvp(notion_id: str, friend_name: str) -> bool:
     Append friend_name to the Friends Going field on an event page.
     Validates name: 2-40 chars, no URLs, no HTML.
     """
-    import re as _re
     if not os.environ.get("NOTION_API_KEY"):
         return False
     name = friend_name.strip()
     if not name or len(name) < 2 or len(name) > 40:
         return False
-    if _re.search(r'https?://', name) or '<' in name:
+    if re.search(r'https?://', name) or '<' in name:
         return False
 
     try:
