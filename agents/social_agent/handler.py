@@ -15,9 +15,11 @@ import datetime
 import json
 import os
 import re
+import requests as _requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from core.llm import chat
 from core.search import search, fetch_page, format_results
+from integrations.notion.client import push_event, get_event_by_rsvp_link
 
 _SOCIAL_CACHE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "social_cache.json")
 
@@ -85,21 +87,88 @@ HOT_KEYWORDS = [
     "photography walk", "sketching", "art class", "meditation", "breathwork",
     # Tech / health
     "tech networking", "healthcare networking", "startup", "demo night",
+    # Investor / finance networking
+    "investor networking", "real estate networking", "private equity", "vc networking",
+    "fintech event", "angel investor",
+    # Comedy / entertainment
+    "comedy night", "stand-up", "open mic", "improv show",
+    # Outdoor / active
+    "outdoor festival", "park event", "street fair", "5k run",
 ]
 
 
-def _get_date_range() -> tuple[str, str, str, datetime.date]:
-    """Returns (today_str, end_str, today_iso, today_date) for filtering and display."""
+def _get_date_range(time_focus: str = "") -> tuple[str, str, str, datetime.date]:
+    """
+    Returns (start_str, end_str, today_iso, today_date) for filtering and display.
+    time_focus can be: 'tonight', 'today', 'weekend', 'week', or '' (default 14 days).
+    """
     today = datetime.date.today()
-    end = today + datetime.timedelta(days=14)
+    weekday = today.weekday()  # Mon=0, Sun=6
+
+    if time_focus in ("tonight", "today"):
+        end = today
+    elif time_focus == "weekend":
+        # Next Saturday
+        days_to_sat = (5 - weekday) % 7
+        if days_to_sat == 0:
+            days_to_sat = 7
+        end = today + datetime.timedelta(days=days_to_sat + 1)
+    elif time_focus == "week":
+        end = today + datetime.timedelta(days=7)
+    else:
+        end = today + datetime.timedelta(days=14)
+
     return today.strftime("%B %d"), end.strftime("%B %d, %Y"), today.isoformat(), today
+
+
+def _is_weekend() -> bool:
+    """True if today is Friday, Saturday, or Sunday."""
+    return datetime.date.today().weekday() >= 4
+
+
+_SCAN_SEEN_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "data", "social_scan_seen.json")
+
+
+def _load_scan_seen() -> set[str]:
+    """Load URLs already surfaced in recent weekly scans (rolling 21-day window)."""
+    try:
+        with open(os.path.normpath(_SCAN_SEEN_FILE)) as f:
+            data = json.load(f)
+        cutoff = (datetime.date.today() - datetime.timedelta(days=21)).isoformat()
+        # data is list of {"url": ..., "date": ...}
+        return {item["url"] for item in data if item.get("date", "") >= cutoff}
+    except Exception:
+        return set()
+
+
+def _save_scan_seen(urls: list[str]) -> None:
+    """Append newly surfaced URLs to the seen file."""
+    try:
+        today_iso = datetime.date.today().isoformat()
+        try:
+            with open(os.path.normpath(_SCAN_SEEN_FILE)) as f:
+                data = json.load(f)
+        except Exception:
+            data = []
+        # Keep only last 21 days
+        cutoff = (datetime.date.today() - datetime.timedelta(days=21)).isoformat()
+        data = [item for item in data if item.get("date", "") >= cutoff]
+        existing = {item["url"] for item in data}
+        for url in urls:
+            if url and url not in existing:
+                data.append({"url": url, "date": today_iso})
+        os.makedirs(os.path.dirname(os.path.normpath(_SCAN_SEEN_FILE)), exist_ok=True)
+        with open(os.path.normpath(_SCAN_SEEN_FILE), "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
 
 
 # ── Query bank — organized by source/theme ────────────────────────────────────
 
-def _build_queries(focus: str = "") -> list[str]:
+def _build_queries(focus: str = "", time_focus: str = "") -> list[str]:
     """Build diverse search queries across all sources targeting Justin's interest areas."""
-    start, end, _, _ = _get_date_range()
+    start, end, _, _ = _get_date_range(time_focus)
 
     base_queries = [
         # ── X / Twitter: "RSVP NYC" and "sign up NYC" ────────────────────────
@@ -486,11 +555,52 @@ def _fetch_x_rsvp() -> list[dict]:
         f'"link in bio" NYC free event RSVP {start} 2026',
         f'"register now" NYC free event {start} 2026 lu.ma OR eventbrite OR splashthat',
     ]
+    raw_tweet_results = []
     for q in x_queries:
         for r in search(q, max_results=4):
+            raw_tweet_results.append(r)
+
+    # For each tweet URL, try fetching via fxtwitter proxy to get replies (where RSVP links often live)
+    for r in raw_tweet_results:
+        url = r.get("url", "")
+        content_snippet = r.get("content", "")
+
+        # First check if the Tavily snippet already contains an event URL
+        inline_urls = _extract_event_urls(content_snippet)
+        if inline_urls:
+            for eu in inline_urls:
+                results.append({"title": r.get("title", "𝕏 event"), "url": eu, "content": content_snippet})
+            continue
+
+        # If it's a tweet URL, fetch via fxtwitter to capture thread/replies
+        if "x.com" in url or "twitter.com" in url:
+            fx_url = _to_fxtwitter(url)
+            if fx_url:
+                thread_content = fetch_page(fx_url, max_chars=4000)
+                if thread_content:
+                    thread_urls = _extract_event_urls(thread_content)
+                    if thread_urls:
+                        for eu in thread_urls:
+                            results.append({
+                                "title": r.get("title", "𝕏 event"),
+                                "url": eu,
+                                "content": content_snippet + " " + thread_content[:300],
+                            })
+                        continue
+                    # No event URL found in thread either — keep original result
+            results.append(r)
+        else:
             results.append(r)
 
     return results
+
+
+def _to_fxtwitter(url: str) -> str | None:
+    """Convert an x.com or twitter.com tweet URL to fxtwitter.com for proxy rendering."""
+    # fxtwitter renders tweet + first replies without login
+    url = re.sub(r'https?://(www\.)?(twitter\.com|x\.com)/', 'https://fxtwitter.com/', url)
+    # Only return if it points to a specific tweet (has /status/)
+    return url if '/status/' in url else None
 
 
 def _fetch_splashthat() -> list[dict]:
@@ -620,11 +730,29 @@ def _fetch_other_sources() -> list[dict]:
         f'site:thrillist.com NYC free events {start} 2026',
         f'NYC Japan Society free events {start} 2026',
         f'NYC free AAPI Asian professional networking event {start} 2026',
-        f'NYC free investor real estate finance networking {start} 2026',
+        # Investor / finance / real estate networking
+        f'NYC free investor networking real estate private equity {start} 2026',
+        f'NYC free fintech finance startup networking event {start} 2026',
+        f'site:lu.ma NYC investor real estate finance networking free {start} 2026',
+        f'site:eventbrite.com NYC investor networking real estate finance free {start} 2026',
     ]
     for q in other_queries:
         for r in search(q, max_results=3):
             results.append(r)
+
+    # Weekend bonus: add entertainment + outdoor queries on Fri/Sat/Sun
+    if _is_weekend():
+        weekend_queries = [
+            f'NYC free outdoor event park festival {start} 2026',
+            f'NYC free comedy show open mic stand up {start} 2026',
+            f'NYC free concert outdoor music event {start} 2026',
+            f'NYC free art gallery opening reception {start} 2026',
+            f'NYC free market food truck street fair {start} 2026',
+            f'NYC free pop-up weekend {start} 2026',
+        ]
+        for q in weekend_queries:
+            for r in search(q, max_results=3):
+                results.append(r)
 
     return results
 
@@ -644,8 +772,12 @@ def _fetch_new_activities() -> list[dict]:
         f'NYC free rock climbing intro session {start} 2026',
         f'NYC free salsa dance class beginner {start} 2026',
         f'NYC free comedy improv open mic {start} 2026',
-        f'NYC free sports social league volleyball pickleball {start} 2026',
-        f'NYC free outdoor activity hiking kayaking {start} 2026',
+        f'NYC free sports social league volleyball pickleball tennis {start} 2026',
+        f'NYC free outdoor activity hiking kayaking park {start} 2026',
+        f'NYC free archery axe throwing new experience {start} 2026',
+        f'NYC free photography walk tour {start} 2026',
+        f'NYC free sketching drawing art class beginner {start} 2026',
+        f'NYC free meditation breathwork wellness workshop {start} 2026',
         f'site:eventbrite.com NYC free beginner class workshop {start} 2026',
         f'site:lu.ma NYC class workshop activity {start} 2026',
         f'site:meetup.com NYC hobby club beginner free {start} 2026',
@@ -697,10 +829,12 @@ def _enrich_listing_results(results: list[dict]) -> list[dict]:
     return enriched
 
 
-def _gather_all_events(focus: str = "") -> list[dict]:
+def _gather_all_events(focus: str = "", time_focus: str = "", exclude_seen: bool = False) -> list[dict]:
     """
     Run all source fetchers in parallel and combine results.
     Returns deduplicated, stale-filtered list.
+
+    exclude_seen: if True, filters out URLs already surfaced in recent weekly scans.
     """
     fetchers = {
         "luma": _fetch_luma,
@@ -729,7 +863,7 @@ def _gather_all_events(focus: str = "") -> list[dict]:
 
     # Add focus-specific queries on top if user has a specific interest
     if focus:
-        start, _, _, _ = _get_date_range()
+        start, _, _, _ = _get_date_range(time_focus)
         for q in [
             f'NYC free events {focus} {start} 2026',
             f'site:lu.ma NYC {focus} free {start} 2026',
@@ -742,8 +876,14 @@ def _gather_all_events(focus: str = "") -> list[dict]:
 
     # Upgrade listing-page URLs to specific event page URLs where possible
     all_results = _enrich_listing_results(all_results)
+    all_results = _filter_stale(all_results)
 
-    return _filter_stale(all_results)
+    # Filter out URLs already shown in recent scans (for weekly scheduled scans)
+    if exclude_seen:
+        recently_seen = _load_scan_seen()
+        all_results = [r for r in all_results if r.get("url") not in recently_seen]
+
+    return all_results
 
 
 def _pull_calendar_context() -> str:
@@ -762,13 +902,367 @@ def _pull_calendar_context() -> str:
         return ""
 
 
+# ── Daily scanner: category definitions ──────────────────────────────────────
+
+CATEGORIES = [
+    "Fitness & Outdoors", "Dating & Meetups", "Food & Drinks",
+    "Painting & Visual Arts", "Ceramics & Crafts", "Games & Trivia",
+    "Performing Arts", "Community & Clubs", "Professional", "Nightlife",
+]
+
+_EXTRACTION_SYSTEM = """You are an NYC event data extractor. Given search results text,
+extract structured event data as a JSON array. Each event must have ALL these fields:
+  name, date (ISO 8601 datetime or null), end_time (ISO 8601 or null),
+  venue (string), address (full street address or ""), neighborhood (Manhattan/Brooklyn/Queens/Bronx/LES/Midtown/Williamsburg/Bushwick/UES-UWS or ""),
+  category (MUST be one of: Fitness & Outdoors, Dating & Meetups, Food & Drinks,
+    Painting & Visual Arts, Ceramics & Crafts, Games & Trivia, Performing Arts,
+    Community & Clubs, Professional, Nightlife),
+  price (number, 0 for free), source (Luma/Eventbrite/Partiful/Reddit/X/Tavily),
+  rsvp_link (direct event URL, NOT a listing/browse page — empty string if not found)
+
+RULES:
+- Only include UPCOMING events (date >= today)
+- price must be a number (not a string)
+- rsvp_link must be a specific event page URL
+- Return ONLY the JSON array, no other text
+- If no valid events found, return []"""
+
+
+def _extract_events_from_results(search_text: str, category_hint: str = "") -> list[dict]:
+    """
+    Use LLM to extract structured event dicts from raw search result text.
+    Filters out: price > 80, missing rsvp_link, past dates.
+    Returns list of event dicts.
+    """
+    import datetime as _dt
+    user_prompt = (
+        f"Today is {_dt.date.today().isoformat()}. "
+        f"Category hint: {category_hint}\n\n"
+        f"Search results:\n{search_text[:6000]}"
+    )
+    raw = chat(_EXTRACTION_SYSTEM, user_prompt, max_tokens=2000)
+    try:
+        # Strip markdown code fences if present
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0]
+        events = json.loads(raw)
+        if not isinstance(events, list):
+            return []
+    except Exception:
+        return []
+
+    today = _dt.date.today().isoformat()
+    filtered = []
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        if not ev.get("rsvp_link"):
+            continue
+        try:
+            price = float(ev.get("price", 0) or 0)
+        except (TypeError, ValueError):
+            price = 0
+        if price > 80:
+            continue
+        ev["price"] = price
+        ev_date = ev.get("date", "") or ""
+        if ev_date and ev_date[:10] < today:
+            continue
+        filtered.append(ev)
+    return filtered
+
+
+def _search_reddit_events() -> list[str]:
+    """
+    Scrape r/nyc, r/nycmeetups, r/nycactivities, r/nycevents for event posts.
+    Returns list of raw result strings for LLM extraction.
+    """
+    subreddits = ["nyc", "nycmeetups", "nycactivities", "nycevents"]
+    texts = []
+    for sub in subreddits:
+        try:
+            url = f"https://www.reddit.com/r/{sub}/new.json?limit=25"
+            resp = _requests.get(url, headers={"User-Agent": "events-scout/1.0"}, timeout=10)
+            resp.raise_for_status()
+            posts = resp.json()["data"]["children"]
+            for post in posts:
+                d = post["data"]
+                title = d.get("title", "")
+                selftext = d.get("selftext", "")[:300]
+                url_link = d.get("url", "")
+                texts.append(f"Title: {title}\nText: {selftext}\nURL: {url_link}")
+        except Exception as e:
+            print(f"Reddit scan error ({sub}): {e}")
+    return texts
+
+
+def handle_intake(url: str) -> str:
+    """
+    Parse an event URL pasted by the user, extract fields, push to Notion.
+    Returns a human-readable confirmation or error string.
+    """
+    import datetime as _dt
+    if not url.startswith("http"):
+        return "That doesn't look like a valid event URL."
+    try:
+        page_text = fetch_page(url)
+    except Exception as e:
+        return f"Couldn't fetch that URL ({e}). Paste the link again?"
+
+    user_prompt = f"Today is {_dt.date.today().isoformat()}. Event URL: {url}\n\nPage content:\n{page_text[:5000]}"
+    raw = chat(_EXTRACTION_SYSTEM, user_prompt, max_tokens=800)
+    try:
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0]
+        data = json.loads(raw)
+        if isinstance(data, list) and data:
+            event = data[0]
+        elif isinstance(data, dict):
+            event = data
+        else:
+            return "Couldn't extract event details from that page. Try a different link."
+    except Exception:
+        return "Couldn't parse event data from that page. Try a different link."
+
+    if not event.get("rsvp_link"):
+        event["rsvp_link"] = url
+    event["source"] = "Manual"
+
+    page_id = push_event(event)
+    if page_id is None:
+        # Could be a duplicate
+        existing = get_event_by_rsvp_link(url)
+        if existing:
+            return f"✅ Already tracking: **{existing['name']}** on {(existing.get('date') or '')[:10]}"
+        return "Couldn't save that event. Check the URL and try again."
+
+    name = event.get("name", "Event")
+    date_str = (event.get("date") or "")[:10]
+    cat = event.get("category", "")
+    return f"✅ Added: **{name}**{' on ' + date_str if date_str else ''} · {cat}"
+
+
+def run_theme_search(theme: str) -> list[dict]:
+    """
+    Search for NYC events matching a freeform theme.
+    Returns list of event dicts (NOT pushed to Notion — caller decides).
+    """
+    if not theme or not theme.strip():
+        return []
+    queries = [
+        f"NYC {theme} events 2026 RSVP sign up",
+        f"site:lu.ma NYC {theme}",
+        f"site:eventbrite.com NYC {theme}",
+    ]
+    all_text = ""
+    for q in queries:
+        try:
+            results = search(q, max_results=5)
+            all_text += format_results(results) + "\n"
+        except Exception:
+            pass
+    if not all_text.strip():
+        return []
+    return _extract_events_from_results(all_text, theme)
+
+
+async def run_event_scan_daily(bot=None, chat_id: str = None) -> str:
+    """
+    Daily 8:15 AM scanner. Searches all sources, pushes new events to Notion,
+    sends batched Telegram digest with [Sign me up] inline buttons.
+    Returns summary string (also sent via Telegram if bot + chat_id provided).
+    """
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    import concurrent.futures
+
+    today = datetime.date.today().isoformat()
+    all_events: list[dict] = []
+
+    # Search each category across sources
+    source_queries = []
+    for cat in CATEGORIES:
+        cat_slug = cat.lower().replace(" & ", " ").replace(" ", "+")
+        source_queries.extend([
+            (f"NYC {cat_slug} events {today[:7]} RSVP sign up site:lu.ma OR site:eventbrite.com OR site:partiful.com", cat),
+            (f"NYC {cat_slug} events upcoming 2026", cat),
+        ])
+    # Reddit (separate)
+    reddit_texts = _search_reddit_events()
+
+    def _run_query(args):
+        q, cat = args
+        try:
+            results = search(q, max_results=5)
+            text = format_results(results)
+            return _extract_events_from_results(text, cat)
+        except Exception:
+            return []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [pool.submit(_run_query, args) for args in source_queries]
+        for f in concurrent.futures.as_completed(futures):
+            all_events.extend(f.result() or [])
+
+    # Reddit extraction
+    if reddit_texts:
+        combined_reddit = "\n---\n".join(reddit_texts[:20])
+        all_events.extend(_extract_events_from_results(combined_reddit, ""))
+
+    # Dedup by rsvp_link within this batch
+    seen_links: set[str] = set()
+    unique_events: list[dict] = []
+    for ev in all_events:
+        link = ev.get("rsvp_link", "")
+        if link and link not in seen_links:
+            seen_links.add(link)
+            unique_events.append(ev)
+
+    # Push to Notion (skip duplicates)
+    pushed: list[dict] = []
+    for ev in unique_events:
+        page_id = push_event(ev)
+        if page_id:
+            ev["notion_id"] = page_id
+            pushed.append(ev)
+
+    if not pushed:
+        summary = "🗓 Daily scan complete — no new events found today."
+        if bot and chat_id:
+            await bot.send_message(chat_id=chat_id, text=summary)
+        return summary
+
+    # Build batched Telegram digest
+    lines = [f"🗓 *{len(pushed)} new events found today:*\n"]
+    keyboard_rows = []
+    for i, ev in enumerate(pushed[:15], 1):  # cap at 15 per digest
+        cat_emoji = {
+            "Fitness & Outdoors": "💪", "Dating & Meetups": "💘",
+            "Food & Drinks": "🍜", "Painting & Visual Arts": "🎨",
+            "Ceramics & Crafts": "🏺", "Games & Trivia": "🎲",
+            "Performing Arts": "🎭", "Community & Clubs": "🤝",
+            "Professional": "💼", "Nightlife": "🎉",
+        }.get(ev.get("category", ""), "📌")
+        date_str = (ev.get("date") or "")[:10]
+        price_str = "Free" if ev.get("price", 0) == 0 else f"${int(ev['price'])}"
+        venue = ev.get("neighborhood") or ev.get("venue", "")
+        lines.append(f"{i}. {cat_emoji} *{ev['name']}*")
+        lines.append(f"   📍 {venue} · {price_str}" + (f" · {date_str}" if date_str else ""))
+        notion_id = ev.get("notion_id", "")
+        keyboard_rows.append([InlineKeyboardButton(
+            f"✅ Sign me up ({i})",
+            callback_data=f"event_register:{notion_id}"
+        )])
+
+    message_text = "\n".join(lines)
+    if bot and chat_id:
+        markup = InlineKeyboardMarkup(keyboard_rows)
+        await bot.send_message(chat_id=chat_id, text=message_text,
+                               parse_mode="Markdown", reply_markup=markup)
+    return message_text
+
+
 # ── On-demand handler ─────────────────────────────────────────────────────────
+
+def _add_event_to_calendar(message: str) -> str:
+    """
+    Detect a URL in the message and create a Google Calendar event from the event page.
+    Returns a confirmation string or error message.
+    """
+    try:
+        from integrations.google.calendar_client import create_event
+        from integrations.google.auth import is_configured
+        if not is_configured():
+            return "Google Calendar not configured — can't save event."
+
+        # Extract any URL from the message
+        url_match = re.search(r'https?://\S+', message)
+        if not url_match:
+            return "No event URL found in your message. Share the event link and I'll add it to your calendar."
+
+        url = url_match.group(0).rstrip(".,;)'\"")
+        content = fetch_page(url, max_chars=8000)
+        if not content:
+            return f"Couldn't fetch event page: {url}"
+
+        # Use LLM to extract event details from page content
+        extract_prompt = (
+            f"Extract the event details from this page content and return them as JSON.\n\n"
+            f"Page URL: {url}\n\n"
+            f"Page content:\n{content[:3000]}\n\n"
+            f"Return ONLY valid JSON with these exact fields (leave blank if not found):\n"
+            f'{{"title": "", "date": "YYYY-MM-DD", "start_time": "HH:MM", "end_time": "HH:MM", '
+            f'"location": "", "description": ""}}\n'
+            f"If the event is multi-day or recurring, use the first occurrence.\n"
+            f"Use 24-hour time format. If no end time, leave blank."
+        )
+        raw = chat(SYSTEM, extract_prompt, max_tokens=300)
+
+        # Parse JSON from LLM response
+        json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if not json_match:
+            return f"Couldn't parse event details from the page. Try adding it manually: {url}"
+
+        details = json.loads(json_match.group(0))
+        title = details.get("title", "Event from social agent")
+        date = details.get("date", "")
+        start_time = details.get("start_time", "19:00")
+        end_time = details.get("end_time", "") or ""
+        location = details.get("location", "")
+        description = details.get("description", "") + f"\n\nSource: {url}"
+
+        if not date:
+            return f"Couldn't find a date for this event. Add manually: {url}"
+
+        # Build datetime strings
+        start_dt = f"{date}T{start_time}:00"
+        if end_time:
+            end_dt = f"{date}T{end_time}:00"
+        else:
+            # Default 2-hour event
+            sh, sm = map(int, start_time.split(":"))
+            eh = (sh + 2) % 24
+            end_dt = f"{date}T{eh:02d}:{sm:02d}:00"
+
+        create_event(
+            title=title,
+            start=start_dt,
+            end=end_dt,
+            location=location,
+            description=description,
+        )
+        return (
+            f"✅ *{title}* added to your calendar!\n"
+            f"📅 {date} at {start_time}\n"
+            f"📍 {location or 'NYC'}\n"
+            f"🔗 {url}"
+        )
+    except Exception as e:
+        return f"Couldn't add event to calendar: {e}"
+
 
 def handle(message: str = "") -> str:
     """Respond to a user's on-demand request for NYC events."""
     msg_lower = message.lower()
 
-    # Detect specific focus from message
+    # ── "Add to calendar" intent ──────────────────────────────────────────────
+    if any(w in msg_lower for w in ["add to calendar", "save to calendar", "put on my calendar",
+                                     "add this event", "save this event", "calendar this",
+                                     "add it to my calendar", "add to my calendar"]):
+        return _add_event_to_calendar(message)
+
+    # ── Detect time focus ─────────────────────────────────────────────────────
+    if any(w in msg_lower for w in ["tonight", "today", "right now", "happening now"]):
+        time_focus = "tonight"
+    elif any(w in msg_lower for w in ["this weekend", "weekend", "saturday", "sunday"]):
+        time_focus = "weekend"
+    elif any(w in msg_lower for w in ["this week", "next few days"]):
+        time_focus = "week"
+    else:
+        time_focus = ""
+
+    # ── Detect topic focus ────────────────────────────────────────────────────
     if any(w in msg_lower for w in ["pop-up", "popup", "pop up", "flash", "drop-in"]):
         focus = "pop-up flash event"
     elif any(w in msg_lower for w in ["tech", "startup", "ai", "founder", "demo"]):
@@ -781,18 +1275,24 @@ def handle(message: str = "") -> str:
         focus = "Hong Kong Cantonese"
     elif any(w in msg_lower for w in ["aapi", "asian american", "asian"]):
         focus = "AAPI Asian American professional"
-    elif any(w in msg_lower for w in ["invest", "real estate", "mortgage", "stock", "finance"]):
-        focus = "investor networking real estate finance"
+    elif any(w in msg_lower for w in ["invest", "real estate", "mortgage", "private equity", "finance"]):
+        focus = "investor networking real estate finance private equity"
     elif any(w in msg_lower for w in ["travel", "miles", "points", "award"]):
         focus = "travel points miles enthusiast meetup"
     elif any(w in msg_lower for w in ["food", "drink", "eat", "tasting", "happy hour"]):
         focus = "food drink tasting happy hour free"
+    elif any(w in msg_lower for w in ["comedy", "improv", "stand up", "standup", "open mic"]):
+        focus = "comedy improv stand-up open mic"
+    elif any(w in msg_lower for w in ["outdoor", "park", "hike", "kayak", "run", "sports"]):
+        focus = "outdoor activities park sports NYC"
     elif any(w in msg_lower for w in ["club", "community", "join", "meet people"]):
         focus = "community club social networking"
+    elif any(w in msg_lower for w in ["new activity", "new experience", "try something", "never done"]):
+        focus = "new experience activity hobby beginner"
     else:
         focus = ""
 
-    results = _gather_all_events(focus=focus)
+    results = _gather_all_events(focus=focus, time_focus=time_focus)
 
     if not results:
         return (
@@ -802,12 +1302,21 @@ def handle(message: str = "") -> str:
             "I also browse: Luma (lu.ma/nyc), Eventbrite, and RSVP NYC."
         )
 
-    start, end, today_iso, today = _get_date_range()
+    start, end, today_iso, today = _get_date_range(time_focus)
     cal_context = _pull_calendar_context()
     context_block = format_results(results[:30])
 
+    time_note = ""
+    if time_focus == "tonight":
+        time_note = "⚡ USER WANTS EVENTS HAPPENING TODAY/TONIGHT ONLY. Focus on today's events.\n\n"
+    elif time_focus == "weekend":
+        time_note = "⚡ USER WANTS WEEKEND EVENTS (Saturday/Sunday). Prioritize Sat/Sun events.\n\n"
+    elif time_focus == "week":
+        time_note = "⚡ USER WANTS THIS WEEK'S EVENTS (next 7 days).\n\n"
+
     prompt = (
         f"TODAY IS {today_iso}. You are finding UPCOMING NYC events.\n\n"
+        f"{time_note}"
         f"STRICT RULE: Only include events occurring on or after {today_iso}. "
         f"Any event before today is IRRELEVANT — exclude it completely. "
         f"Do not mention events from any past date or past month of {today.year}, "
@@ -818,13 +1327,15 @@ def handle(message: str = "") -> str:
         f"PRIORITY ORDER (strictly follow this ranking):\n"
         f"1. 🍻 Events with FREE FOOD, FREE DRINKS, open bar, or complimentary refreshments — always first\n"
         f"2. 🆕 New activities or hobbies Justin likely hasn't tried "
-        f"(climbing, ceramics, salsa, cooking class, improv, sports league, kayaking, etc.)\n"
+        f"(climbing, ceramics, salsa, cooking class, improv, comedy, sports league, kayaking, archery, etc.)\n"
         f"3. 🏥 Healthcare / health-tech / digital health networking\n"
         f"4. 💻 Tech / startup / AI demo nights\n"
-        f"5. 🎌 Asian / AAPI / Japanese / Hong Kong cultural or professional\n"
-        f"6. 🎉 Pop-ups and flash events (always include any found)\n"
-        f"7. 🎊 General free NYC networking\n\n"
-        f"Mark 🍻 on any event with free food/drinks. Mark 🆕 on new activity/hobby events.\n"
+        f"5. 💼 Investor / real estate / finance / private equity networking\n"
+        f"6. 🎌 Asian / AAPI / Japanese / Hong Kong cultural or professional\n"
+        f"7. 🎉 Pop-ups and flash events (always include any found)\n"
+        f"8. 🎊 General free NYC networking\n\n"
+        f"Mark 🍻 on any event with free food/drinks. Mark 🆕 on new activity/hobby events. "
+        f"Mark 💼 on investor/finance networking events.\n"
         f"If any X/Twitter posts with event RSVP links appear (from 'RSVP NYC' or 'sign up NYC' searches), "
         f"label source as 𝕏 and prioritize them.\n"
         f"If Instagram posts appear (#RSVPnyc, #NYCevents, #NYCpopup), label source as 📸 Instagram.\n"
@@ -833,11 +1344,12 @@ def handle(message: str = "") -> str:
         f"LINK RULE: Each event's 🔗 link MUST be the direct event RSVP page "
         f"(eventbrite.com/e/..., lu.ma/abc123, meetup.com/group/events/123, partiful.com/e/...). "
         f"NEVER use a category/listing page as the link. Omit the link if no specific event URL found.\n"
+        f"At the bottom, add: 💡 _Tip: say 'add to calendar [URL]' to save any event to your Google Calendar._\n"
         f"If fewer than 3 future events are found, say so honestly — do not invent events.\n"
         f"User query: {message}"
     )
 
-    return chat(SYSTEM, prompt, max_tokens=900)
+    return chat(SYSTEM, prompt, max_tokens=1000)
 
 
 # ── Scheduled proactive scan ──────────────────────────────────────────────────
@@ -849,8 +1361,9 @@ def run_event_scan(send_all: bool = False) -> str:
 
     If send_all=True: return full roundup even if no hot events found.
     If send_all=False: only return message if hot events exist (daily-alert mode).
+    Deduplicates against URLs surfaced in the past 21 days.
     """
-    results = _gather_all_events()
+    results = _gather_all_events(exclude_seen=True)
 
     if not results:
         if send_all:
@@ -885,25 +1398,34 @@ def run_event_scan(send_all: bool = False) -> str:
         f"Search results:\n{context_block}\n\n"
         f"Priority order:\n"
         f"1. 🍻 FREE FOOD / FREE DRINKS / open bar — always rank these #1\n"
-        f"2. 🆕 New activities/hobbies (climbing, ceramics, salsa, cooking class, improv, etc.)\n"
+        f"2. 🆕 New activities/hobbies (climbing, ceramics, salsa, cooking class, improv, comedy, etc.)\n"
         f"3. 🏥 Healthcare / health-tech\n"
         f"4. 💻 Tech / startup / AI\n"
-        f"5. 🎌 Asian/AAPI/Japanese/HK cultural or professional\n"
-        f"6. 🎉 Pop-ups and flash events [ALWAYS include any pop-ups found]\n"
-        f"7. 🎊 General free NYC events\n\n"
+        f"5. 💼 Investor / real estate / finance / private equity networking\n"
+        f"6. 🎌 Asian/AAPI/Japanese/HK cultural or professional\n"
+        f"7. 🎉 Pop-ups and flash events [ALWAYS include any pop-ups found]\n"
+        f"8. 🎊 General free NYC events\n\n"
         f"If X/Twitter posts with RSVP links appear, include them labelled as 𝕏. "
         f"Include Partiful links if found. "
         f"If recurring clubs or communities worth joining long-term appear, add a separate "
         f"'🏛 Communities to Join' section at the end.\n"
+        f"At the bottom add: 💡 _Tip: reply 'add to calendar [URL]' to save any event._\n"
         f"If fewer than 3 future events are found in the results, say so honestly — do not invent events.\n"
         f"Format clearly for Telegram. Bold the top pick."
     )
 
-    body = chat(SYSTEM, prompt, max_tokens=900)
+    body = chat(SYSTEM, prompt, max_tokens=1000)
 
     # ── Save structured event data to social_cache.json for dashboard ─────────
     try:
         _save_social_cache(results[:30], body, today_iso, hot)
+    except Exception:
+        pass
+
+    # ── Mark URLs as seen so future scans skip them ───────────────────────────
+    try:
+        seen_urls = [r["url"] for r in results[:30] if r.get("url")]
+        _save_scan_seen(seen_urls)
     except Exception:
         pass
 
