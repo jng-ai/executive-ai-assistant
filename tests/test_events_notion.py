@@ -175,3 +175,34 @@ class TestAddFriendRsvp:
         from integrations.notion import client
         result = client.add_friend_rsvp("page-abc", "")
         assert result is False
+
+    def test_add_friend_rejects_when_max_friends_reached(self, mock_notion_env):
+        get_resp = MagicMock()
+        # 10 friends already — should reject
+        get_resp.json.return_value = {"properties": {
+            "Friends Going": {"rich_text": [{"plain_text": "A, B, C, D, E, F, G, H, I, J"}]}
+        }}
+        get_resp.raise_for_status = MagicMock()
+        with patch("integrations.notion.client.requests.get", return_value=get_resp):
+            from integrations.notion import client
+            result = client.add_friend_rsvp("page-abc", "NewPerson")
+        assert result is False
+
+
+class TestGetFriendsGoing:
+    def test_returns_list_of_names(self, mock_notion_env):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"properties": {
+            "Friends Going": {"rich_text": [{"plain_text": "Alice, Bob, Carol"}]}
+        }}
+        mock_resp.raise_for_status = MagicMock()
+        with patch("integrations.notion.client.requests.get", return_value=mock_resp):
+            from integrations.notion import client
+            result = client.get_friends_going("page-abc")
+        assert result == ["Alice", "Bob", "Carol"]
+
+    def test_returns_empty_list_when_no_api_key(self, monkeypatch):
+        monkeypatch.delenv("NOTION_API_KEY", raising=False)
+        from integrations.notion import client
+        result = client.get_friends_going("page-abc")
+        assert result == []
