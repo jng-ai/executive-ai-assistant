@@ -100,6 +100,14 @@ main{max-width:960px;margin:0 auto;padding:1rem}
 /* Empty */
 .empty{text-align:center;padding:2.5rem 1rem;color:#6b8099;font-size:.8rem}
 
+/* Tabs */
+.tab-bar{display:flex;gap:.4rem;padding:.6rem 1.2rem;border-bottom:1px solid #1e3a52;background:#0d1b2a;overflow-x:auto}
+.tab-btn{background:#112236;border:1px solid #1e3a52;border-radius:7px;color:#6b8099;font-size:.75rem;font-weight:600;padding:.35rem .75rem;cursor:pointer;transition:.15s;white-space:nowrap}
+.tab-btn:hover{color:#38bdf8;border-color:#38bdf8}
+.tab-btn.active{background:#172c43;border-color:#38bdf8;color:#38bdf8}
+.tab-panel{display:none}
+.tab-panel.active{display:block}
+
 /* Bottom progress */
 #prog-bar{position:fixed;bottom:0;left:0;right:0;height:2px;background:#1e3a52}
 #prog-fill{height:100%;background:#38bdf8;transition:width 1s linear}
@@ -122,15 +130,96 @@ a:hover{text-decoration:underline}
   <button id="refresh-btn" onclick="loadSummary()">↻ Refresh</button>
 </header>
 
+<div class="tab-bar">
+  <button class="tab-btn active" data-tab="agents" onclick="showTab('agents')">⚡ Agents</button>
+  <button class="tab-btn" data-tab="events" onclick="showTab('events')">🗓 Events</button>
+</div>
+
 <main>
-  <div class="grid-label">Agents</div>
-  <div class="grid" id="grid">
-    <div class="card"><div class="shimmer"></div><div class="shimmer" style="width:60%"></div></div>
-    <div class="card"><div class="shimmer"></div><div class="shimmer" style="width:60%"></div></div>
-    <div class="card"><div class="shimmer"></div><div class="shimmer" style="width:60%"></div></div>
-    <div class="card"><div class="shimmer"></div><div class="shimmer" style="width:60%"></div></div>
-    <div class="card"><div class="shimmer"></div><div class="shimmer" style="width:60%"></div></div>
-    <div class="card"><div class="shimmer"></div><div class="shimmer" style="width:60%"></div></div>
+  <!-- ── Agents Tab ─────────────────────────────────────────────────────────── -->
+  <div id="tab-agents" class="tab-panel active">
+    <div class="grid-label" style="margin-top:.5rem">Agents</div>
+    <div class="grid" id="grid">
+      <div class="card"><div class="shimmer"></div><div class="shimmer" style="width:60%"></div></div>
+      <div class="card"><div class="shimmer"></div><div class="shimmer" style="width:60%"></div></div>
+      <div class="card"><div class="shimmer"></div><div class="shimmer" style="width:60%"></div></div>
+      <div class="card"><div class="shimmer"></div><div class="shimmer" style="width:60%"></div></div>
+      <div class="card"><div class="shimmer"></div><div class="shimmer" style="width:60%"></div></div>
+      <div class="card"><div class="shimmer"></div><div class="shimmer" style="width:60%"></div></div>
+    </div>
+  </div>
+
+  <!-- ── Events Tab ────────────────────────────────────────────────────────── -->
+  <div id="tab-events" class="tab-panel" style="display:none">
+
+    <!-- Progress Section -->
+    <div class="card" style="margin-bottom:.7rem;margin-top:.5rem">
+      <div class="card-top-bar bar-green"></div>
+      <div class="card-head"><span class="card-name"><span class="dot dot-green"></span>2026 Events Goal</span><span id="events-goal-chip" class="chip">Loading…</span></div>
+      <div id="events-goal-bar-wrap" style="background:#1e3a52;border-radius:4px;height:6px;margin:.4rem 0">
+        <div id="events-goal-bar" style="background:linear-gradient(90deg,#38bdf8,#4ade80);height:6px;border-radius:4px;width:0%;transition:width .4s"></div>
+      </div>
+      <div id="events-cat-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:.4rem;margin-top:.5rem"></div>
+      <div id="events-nudge" style="margin-top:.5rem;display:none;background:#172c43;border:1px solid #1e6a52;border-radius:6px;padding:.5rem .7rem;font-size:.72rem;color:#34d399"></div>
+    </div>
+
+    <!-- Theme Search Section -->
+    <div class="card" style="margin-bottom:.7rem">
+      <div class="card-top-bar bar-warn"></div>
+      <div class="card-head"><span class="card-name">🔍 Theme Search</span></div>
+      <div style="display:flex;gap:.4rem;margin-bottom:.5rem">
+        <input id="theme-input" type="text" placeholder="salsa dancing, pottery, chess club…"
+          style="flex:1;background:#112236;border:1px solid #1e3a52;border-radius:6px;padding:.4rem .6rem;color:#e2e8f0;font-size:.75rem"
+          onkeydown="if(event.key==='Enter')searchTheme()" />
+        <button onclick="searchTheme()" style="background:#38bdf8;border:none;border-radius:6px;color:#070e1a;font-size:.72rem;font-weight:700;padding:.4rem .8rem;cursor:pointer">Search →</button>
+      </div>
+      <div style="display:flex;gap:.35rem;flex-wrap:wrap;margin-bottom:.6rem" id="theme-chips">
+        <span class="chip" style="cursor:pointer" onclick="document.getElementById('theme-input').value=this.textContent;searchTheme()">salsa dancing</span>
+        <span class="chip" style="cursor:pointer" onclick="document.getElementById('theme-input').value=this.textContent;searchTheme()">sake tasting</span>
+        <span class="chip" style="cursor:pointer" onclick="document.getElementById('theme-input').value=this.textContent;searchTheme()">chess club</span>
+        <span class="chip" style="cursor:pointer" onclick="document.getElementById('theme-input').value=this.textContent;searchTheme()">improv comedy</span>
+        <span class="chip" style="cursor:pointer" onclick="document.getElementById('theme-input').value=this.textContent;searchTheme()">singles hiking</span>
+      </div>
+      <div id="theme-results" style="display:none">
+        <div style="font-size:.65rem;color:#6b8099;margin-bottom:.4rem" id="theme-results-label"></div>
+        <div id="theme-results-list" style="display:flex;flex-direction:column;gap:.4rem"></div>
+      </div>
+      <div id="theme-loading" style="display:none;font-size:.72rem;color:#6b8099">Searching…</div>
+    </div>
+
+    <!-- Event Feed -->
+    <div class="card">
+      <div class="card-top-bar bar-ok"></div>
+      <div class="card-head"><span class="card-name">🗓 Upcoming Events</span><button onclick="loadEvents()" style="background:#112236;border:1px solid #1e3a52;color:#6b8099;padding:.2rem .5rem;border-radius:6px;font-size:.65rem;cursor:pointer">↻ Refresh</button></div>
+
+      <!-- URL Drop Box -->
+      <div style="display:flex;gap:.4rem;margin-bottom:.5rem">
+        <input id="intake-url" type="text" placeholder="Paste any event link to add it…"
+          style="flex:1;background:#112236;border:1px dashed #1e3a52;border-radius:6px;padding:.4rem .6rem;color:#6b8099;font-size:.72rem"
+          onkeydown="if(event.key==='Enter')addEventUrl()" />
+        <button onclick="addEventUrl()" style="background:#172c43;border:1px solid #1e3a52;border-radius:6px;color:#38bdf8;font-size:.72rem;padding:.4rem .7rem;cursor:pointer">Add ↵</button>
+      </div>
+      <div id="intake-msg" style="font-size:.7rem;margin-bottom:.4rem;display:none"></div>
+
+      <!-- Filter Pills -->
+      <div id="events-filters" style="display:flex;gap:.3rem;flex-wrap:wrap;margin-bottom:.5rem">
+        <span class="chip" style="cursor:pointer;background:#1e3a52;color:#38bdf8" onclick="filterEvents('')">All</span>
+        <span class="chip" style="cursor:pointer" onclick="filterEvents('Going')">Going ✓</span>
+        <span class="chip" style="cursor:pointer" onclick="filterEvents('New')">New</span>
+        <span class="chip" style="cursor:pointer" onclick="filterEvents('Fitness & Outdoors')">💪</span>
+        <span class="chip" style="cursor:pointer" onclick="filterEvents('Dating & Meetups')">💘</span>
+        <span class="chip" style="cursor:pointer" onclick="filterEvents('Food & Drinks')">🍜</span>
+        <span class="chip" style="cursor:pointer" onclick="filterEvents('Painting & Visual Arts')">🎨</span>
+        <span class="chip" style="cursor:pointer" onclick="filterEvents('Ceramics & Crafts')">🏺</span>
+        <span class="chip" style="cursor:pointer" onclick="filterEvents('Games & Trivia')">🎲</span>
+        <span class="chip" style="cursor:pointer" onclick="filterEvents('Performing Arts')">🎭</span>
+        <span class="chip" style="cursor:pointer" onclick="filterEvents('Community & Clubs')">🤝</span>
+      </div>
+
+      <div id="events-feed" style="display:flex;flex-direction:column;gap:.5rem">
+        <div style="font-size:.72rem;color:#6b8099">Loading events…</div>
+      </div>
+    </div>
   </div>
 </main>
 
@@ -684,6 +773,218 @@ function startCountdown() {
 
 loadSummary();
 startCountdown();
+
+// ── Tab switching ──────────────────────────────────────────────────────────────
+function showTab(tabName) {
+  document.querySelectorAll('.tab-panel').forEach(function(p) {
+    p.style.display = 'none';
+    p.classList.remove('active');
+  });
+  document.querySelectorAll('.tab-btn').forEach(function(b) {
+    b.classList.remove('active');
+  });
+  const panel = document.getElementById('tab-' + tabName);
+  if (panel) { panel.style.display = 'block'; panel.classList.add('active'); }
+  const btn = document.querySelector('[data-tab="' + tabName + '"]');
+  if (btn) btn.classList.add('active');
+
+  if (tabName === 'events') {
+    loadEventsProgress();
+    loadEvents();
+  }
+}
+
+// ── Events Tab ─────────────────────────────────────────────────────────────
+
+let _allEvents = [];
+const CAT_EMOJI = {
+  "Fitness & Outdoors":"💪","Dating & Meetups":"💘","Food & Drinks":"🍜",
+  "Painting & Visual Arts":"🎨","Ceramics & Crafts":"🏺","Games & Trivia":"🎲",
+  "Performing Arts":"🎭","Community & Clubs":"🤝","Professional":"💼","Nightlife":"🎉"
+};
+const CAT_COLOR = {
+  "Fitness & Outdoors":"#4ade80","Dating & Meetups":"#f472b6","Food & Drinks":"#fb923c",
+  "Painting & Visual Arts":"#a78bfa","Ceramics & Crafts":"#fbbf24","Games & Trivia":"#34d399",
+  "Performing Arts":"#f87171","Community & Clubs":"#38bdf8","Professional":"#94a3b8","Nightlife":"#e879f9"
+};
+
+async function loadEventsProgress() {
+  try {
+    const r = await fetch('/api/events/progress');
+    const d = await r.json();
+    const pct = Math.min(100, Math.round((d.total_attended / d.goal) * 100));
+    document.getElementById('events-goal-chip').textContent = `${d.total_attended} / ${d.goal} events`;
+    document.getElementById('events-goal-bar').style.width = pct + '%';
+
+    const grid = document.getElementById('events-cat-grid');
+    grid.innerHTML = '';
+    (d.all_categories || []).forEach(cat => {
+      const count = (d.by_category || {})[cat] || 0;
+      const color = CAT_COLOR[cat] || '#6b8099';
+      const emoji = CAT_EMOJI[cat] || '📌';
+      const bar_pct = Math.min(100, count * 20);
+      grid.innerHTML += `<div style="background:#112236;border:1px solid #1e3a52;border-radius:6px;padding:.4rem .5rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+          <span style="font-size:.7rem">${emoji} ${cat.split(' ')[0]}</span>
+          <span style="font-size:.72rem;font-weight:700;color:${color}">${count}</span>
+        </div>
+        <div style="background:#1e3a52;border-radius:2px;height:3px">
+          <div style="background:${color};width:${bar_pct}%;height:3px;border-radius:2px"></div>
+        </div>
+      </div>`;
+    });
+
+    const nudge = document.getElementById('events-nudge');
+    if (d.categories_not_tried && d.categories_not_tried.length > 0) {
+      const cats = d.categories_not_tried.slice(0,3).map(c => `${CAT_EMOJI[c]||''} ${c}`).join(', ');
+      nudge.textContent = `🎯 Not tried yet: ${cats} — check the feed for matching events`;
+      nudge.style.display = 'block';
+    }
+  } catch(e) { console.error('Progress load error', e); }
+}
+
+async function loadEvents(statusFilter='', categoryFilter='') {
+  const feed = document.getElementById('events-feed');
+  feed.innerHTML = '<div style="font-size:.72rem;color:#6b8099">Loading…</div>';
+  try {
+    let url = '/api/events?';
+    if (categoryFilter) url += `category=${encodeURIComponent(categoryFilter)}&`;
+    if (statusFilter)   url += `status=${encodeURIComponent(statusFilter)}&`;
+    const r = await fetch(url);
+    const d = await r.json();
+    _allEvents = d.events || [];
+    renderEvents(_allEvents);
+  } catch(e) {
+    feed.innerHTML = '<div style="font-size:.72rem;color:#f87171">Failed to load events.</div>';
+  }
+}
+
+function renderEvents(events) {
+  const feed = document.getElementById('events-feed');
+  if (!events.length) {
+    feed.innerHTML = '<div style="font-size:.72rem;color:#6b8099">No events found.</div>';
+    return;
+  }
+  feed.innerHTML = events.map(ev => {
+    const emoji = CAT_EMOJI[ev.category] || '📌';
+    const color = CAT_COLOR[ev.category] || '#6b8099';
+    const price = ev.price === 0 ? 'Free' : `$${ev.price}`;
+    const dateStr = ev.date ? ev.date.slice(0,10) : '';
+    const timeStr = ev.date && ev.date.length > 10 ? ev.date.slice(11,16) : '';
+    const statusBadge = ev.status === 'Going'
+      ? `<span style="background:#1a2d25;border-radius:4px;padding:1px 5px;font-size:.65rem;color:#4ade80">Going ✓</span>`
+      : ev.status === 'New'
+        ? `<span style="background:#172c43;border-radius:4px;padding:1px 5px;font-size:.65rem;color:#fbbf24">New</span>`
+        : `<span style="background:#1a2030;border-radius:4px;padding:1px 5px;font-size:.65rem;color:#6b8099">${ev.status}</span>`;
+    const friendsBadge = ev.friends_going
+      ? `<span style="font-size:.65rem;color:#f472b6">👥 ${ev.friends_going}</span>` : '';
+    return `<div style="background:#112236;border:1px solid #1e3a52;border-radius:8px;padding:.55rem .7rem;display:flex;gap:.6rem;align-items:flex-start">
+      <div style="background:#172c43;border-radius:4px;padding:.2rem .35rem;text-align:center;min-width:30px;flex-shrink:0">
+        <div style="font-size:.55rem;color:#38bdf8;font-weight:700">${dateStr.slice(5,7)? ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'][parseInt(dateStr.slice(5,7))-1] : ''}</div>
+        <div style="font-size:.85rem;font-weight:800;color:#e2e8f0">${dateStr.slice(8,10)||'?'}</div>
+      </div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:.78rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${ev.name}</div>
+        <div style="font-size:.68rem;color:#6b8099;margin-top:.15rem">${ev.address || ev.venue || ''}${timeStr ? ' · '+timeStr : ''} · ${price} · ${ev.source||''}</div>
+        <div style="display:flex;gap:.3rem;margin-top:.25rem;flex-wrap:wrap;align-items:center">
+          <span style="background:#1a1a2e;border-radius:4px;padding:1px 5px;font-size:.65rem;color:${color}">${emoji} ${ev.category||''}</span>
+          ${statusBadge}
+          ${friendsBadge}
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:.3rem;flex-shrink:0">
+        ${ev.status !== 'Going' && ev.status !== 'Attended' ? `<button onclick="signMeUp('${ev.notion_id}')" style="background:#38bdf8;border:none;border-radius:5px;color:#070e1a;font-size:.65rem;font-weight:700;padding:.25rem .5rem;cursor:pointer">Sign me up</button>` : ''}
+        ${ev.rsvp_link ? `<a href="${ev.rsvp_link}" target="_blank" style="background:#1e3a52;border-radius:5px;color:#38bdf8;font-size:.65rem;padding:.25rem .5rem;text-decoration:none;text-align:center">RSVP →</a>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function filterEvents(filter) {
+  if (!filter) { renderEvents(_allEvents); return; }
+  const filtered = _allEvents.filter(e => e.status === filter || e.category === filter);
+  renderEvents(filtered);
+}
+
+async function signMeUp(notionId) {
+  if (!confirm('Register you for this event?')) return;
+  try {
+    const r = await fetch(`/api/events/rsvp/${notionId}`, {method:'POST'});
+    const d = await r.json();
+    alert(d.message || 'Done!');
+    loadEvents();
+  } catch(e) { alert('Registration failed. Try the RSVP link directly.'); }
+}
+
+async function addEventUrl() {
+  const url = document.getElementById('intake-url').value.trim();
+  const msg = document.getElementById('intake-msg');
+  if (!url) return;
+  msg.style.display = 'block';
+  msg.style.color = '#6b8099';
+  msg.textContent = 'Adding…';
+  try {
+    const r = await fetch('/api/events/intake', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({url})
+    });
+    const d = await r.json();
+    msg.style.color = d.ok ? '#4ade80' : '#f87171';
+    msg.textContent = d.message || (d.ok ? 'Added!' : 'Failed');
+    if (d.ok) { document.getElementById('intake-url').value=''; loadEvents(); }
+  } catch(e) { msg.style.color='#f87171'; msg.textContent='Error adding event.'; }
+}
+
+async function searchTheme() {
+  const theme = document.getElementById('theme-input').value.trim();
+  if (!theme) return;
+  document.getElementById('theme-loading').style.display = 'block';
+  document.getElementById('theme-results').style.display = 'none';
+  try {
+    const r = await fetch('/api/events/theme-search', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({theme})
+    });
+    const d = await r.json();
+    document.getElementById('theme-loading').style.display = 'none';
+    const results = d.results || [];
+    const label = document.getElementById('theme-results-label');
+    const list = document.getElementById('theme-results-list');
+    label.textContent = `${results.length} result${results.length!==1?'s':''} for "${theme}"`;
+    list.innerHTML = results.map((ev,i) => {
+      const price = ev.price===0?'Free':`$${ev.price}`;
+      const dateStr = (ev.date||'').slice(0,10);
+      return `<div style="background:#112236;border:1px solid #1e3a52;border-radius:7px;padding:.5rem .6rem;display:flex;justify-content:space-between;align-items:center;gap:.5rem">
+        <div>
+          <div style="font-size:.75rem;font-weight:600">${ev.name}</div>
+          <div style="font-size:.67rem;color:#6b8099">${dateStr} · ${ev.address||ev.venue||''} · ${price}</div>
+          <div style="font-size:.67rem;color:#6b8099">📌 ${ev.source||''} · ${ev.category||''}</div>
+        </div>
+        <button onclick="addThemeEvent(${i})" style="background:#1e3a52;border:none;border-radius:5px;color:#38bdf8;font-size:.67rem;padding:.25rem .55rem;cursor:pointer;white-space:nowrap">+ Add</button>
+      </div>`;
+    }).join('');
+    document.getElementById('theme-results').style.display = 'block';
+    window._themeResults = results;
+  } catch(e) {
+    document.getElementById('theme-loading').style.display='none';
+    document.getElementById('theme-results-label').textContent='Search failed.';
+    document.getElementById('theme-results').style.display='block';
+  }
+}
+
+async function addThemeEvent(idx) {
+  const ev = (window._themeResults||[])[idx];
+  if (!ev) return;
+  try {
+    const r = await fetch('/api/events/add', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(ev)
+    });
+    const d = await r.json();
+    if (d.ok) { alert(`✅ Added: ${ev.name}`); loadEvents(); }
+    else alert(d.message || 'Could not add event.');
+  } catch(e) { alert('Failed to add event.'); }
+}
 </script>
 </body>
 </html>
