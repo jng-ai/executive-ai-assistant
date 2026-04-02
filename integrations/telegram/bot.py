@@ -23,7 +23,6 @@ from agents.travel_agent.handler import handle as travel_handle
 from agents.health_agent.handler import handle as health_handle, handle_food_correction, extract_exercise_images, run_daily_nudge, run_lunch_nudge, run_dinner_nudge, run_breakfast_nudge, run_workout_reminder, run_weekly_health_report, run_monthly_health_report
 from agents.social_agent.handler import (
     handle as social_handle,
-    run_event_scan,          # keep for backward compat (old job still references it until replaced)
     run_event_scan_daily,
     handle_intake,
     _register_for_event,
@@ -863,31 +862,29 @@ async def _scheduled_reminder_check(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Reminder check error: {e}")
 
 
-async def _scheduled_event_scan(context: ContextTypes.DEFAULT_TYPE):
-    """
-    Twice-weekly NYC event scan — Tuesdays + Fridays at 9 AM ET.
-    Sends full roundup on Fridays (send_all=True), immediate-alert-only on Tuesdays.
-    """
+async def _scheduled_daily_event_scan(context: ContextTypes.DEFAULT_TYPE):
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     try:
-        import datetime as dt
-        today = dt.date.today()
-        is_friday = today.weekday() == 4  # 0=Mon, 4=Fri
-        result = await asyncio.to_thread(run_event_scan, is_friday)
-        if result:
-            chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-            if chat_id:
-                # Split if long
-                for i in range(0, len(result), 4000):
-                    await context.bot.send_message(
-                        chat_id=chat_id, text=result[i:i+4000], parse_mode="Markdown"
-                    )
+        await run_event_scan_daily(context.bot, chat_id)
     except Exception as e:
-        logger.error(f"Scheduled event scan error: {e}")
+        logger.error(f"Daily event scan error: {e}")
+
+
+async def _scheduled_post_event_check(context: ContextTypes.DEFAULT_TYPE):
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    try:
+        await run_post_event_check(context.bot, chat_id)
+    except Exception as e:
+        logger.error(f"Post-event check error: {e}")
+
+
+async def _scheduled_friend_rsvp_poll(context: ContextTypes.DEFAULT_TYPE):
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    await _poll_friend_rsvps(context.bot, chat_id)
 
 
 async def handle_event_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle inline button callbacks for event registration and post-event confirmation."""
-    import asyncio
     query = update.callback_query
     await query.answer()
     data = query.data or ""
@@ -1022,7 +1019,7 @@ def run_bot():
 
         # Daily event scan — 8:15 AM ET
         job_queue.run_daily(
-            lambda ctx: asyncio.create_task(run_event_scan_daily(ctx.bot, os.environ.get("TELEGRAM_CHAT_ID"))),
+            _scheduled_daily_event_scan,
             time=dt.time(hour=8, minute=15, tzinfo=ET),
             name="daily_event_scan",
         )
@@ -1030,7 +1027,7 @@ def run_bot():
 
         # Post-event confirmation — 9:00 AM ET
         job_queue.run_daily(
-            lambda ctx: asyncio.create_task(run_post_event_check(ctx.bot, os.environ.get("TELEGRAM_CHAT_ID"))),
+            _scheduled_post_event_check,
             time=dt.time(hour=9, minute=0, tzinfo=ET),
             name="post_event_check",
         )
@@ -1038,8 +1035,9 @@ def run_bot():
 
         # Friend RSVP poll — every 15 minutes
         job_queue.run_repeating(
-            lambda ctx: asyncio.create_task(_poll_friend_rsvps(ctx.bot, os.environ.get("TELEGRAM_CHAT_ID"))),
+            _scheduled_friend_rsvp_poll,
             interval=900,
+            first=60,
             name="friend_rsvp_poll",
         )
         logger.info("Scheduled friend RSVP poll every 15 minutes")
