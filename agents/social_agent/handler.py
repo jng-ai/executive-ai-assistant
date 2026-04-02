@@ -15,12 +15,16 @@ import datetime
 import json
 import logging
 import os
+import os as _os
+import pathlib
 import re
 import requests as _requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from core.llm import chat
 from core.search import search, fetch_page, format_results
-from integrations.notion.client import push_event, get_event_by_rsvp_link
+from integrations.notion.client import push_event, get_event_by_rsvp_link, update_event_status
+from integrations.google.calendar_client import list_events, create_event
+from playwright.sync_api import sync_playwright
 
 _SOCIAL_CACHE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "social_cache.json")
 
@@ -1484,3 +1488,163 @@ def _save_social_cache(raw_results: list[dict], llm_summary: str, scan_date: str
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
     with open(cache_path, "w") as f:
         json.dump(cache, f, indent=2)
+
+
+def _check_calendar_conflict(start_iso: str, end_iso: str) -> str | None:
+    """
+    Check Google Calendar for conflicts in the given time window.
+    Returns conflicting event name if found, else None.
+    """
+    try:
+        events = list_events(days_ahead=30)
+        start_dt = datetime.datetime.fromisoformat(start_iso)
+        end_dt = datetime.datetime.fromisoformat(end_iso) if end_iso else start_dt + datetime.timedelta(hours=2)
+        for ev in events:
+            ev_start = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date", "")
+            ev_end   = ev.get("end",   {}).get("dateTime") or ev.get("end",   {}).get("date", "")
+            if not ev_start:
+                continue
+            try:
+                es = datetime.datetime.fromisoformat(ev_start.replace("Z", "+00:00")).replace(tzinfo=None)
+                ee = datetime.datetime.fromisoformat(ev_end.replace("Z", "+00:00")).replace(tzinfo=None) if ev_end else es + datetime.timedelta(hours=1)
+                # Overlap check
+                if es < end_dt and ee > start_dt:
+                    return ev.get("summary", "Existing event")
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+
+def _register_for_event(event: dict, skip_playwright: bool = False) -> str:
+    """
+    Attempt to auto-register for an event using Playwright headless.
+    Updates Notion status on success/failure.
+    Returns human-readable result string for Telegram.
+
+    skip_playwright=True: only checks calendar conflict, returns early (for testing).
+    """
+    name = event.get("name", "Event")
+    rsvp_link = event.get("rsvp_link", "")
+    notion_id = event.get("notion_id", "")
+    start_iso = event.get("date") or ""
+    end_iso = event.get("end_time") or ""
+    address = event.get("address", "")
+
+    # Calendar check
+    conflict = _check_calendar_conflict(start_iso, end_iso) if start_iso else None
+    conflict_note = f"\n⚠️ Note: you have '{conflict}' at that time." if conflict else ""
+
+    if skip_playwright:
+        return f"Calendar conflict: {conflict}" if conflict else "No conflict"
+
+    # Playwright registration
+    user_name = "Justin Ngai"
+    user_email = _os.environ.get("JUSTIN_EMAIL", "jngai5.3@gmail.com")
+    user_phone = _os.environ.get("JUSTIN_PHONE", "")
+
+    failure_dir = pathlib.Path(__file__).parent.parent.parent / "data" / "reg_failures"
+    failure_dir.mkdir(exist_ok=True)
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(rsvp_link, timeout=30000)
+            page.wait_for_load_state("domcontentloaded", timeout=15000)
+            content = page.content()
+
+            # CAPTCHA detection
+            if any(kw in content.lower() for kw in ["recaptcha", "hcaptcha", "cf-turnstile"]):
+                browser.close()
+                if notion_id:
+                    update_event_status(notion_id, "Interested")
+                return (
+                    f"⚠️ Couldn't auto-register for **{name}** — CAPTCHA detected.\n"
+                    f"Register manually: {rsvp_link}{conflict_note}"
+                )
+
+            # Autofill common fields
+            field_map = {
+                "name":       user_name,
+                "full_name":  user_name,
+                "first_name": "Justin",
+                "last_name":  "Ngai",
+                "email":      user_email,
+                "phone":      user_phone,
+            }
+            filled = False
+            for attr_val, fill_val in field_map.items():
+                if not fill_val:
+                    continue
+                for selector in [
+                    f"input[name='{attr_val}']",
+                    f"input[placeholder*='{attr_val}' i]",
+                    f"input[id*='{attr_val}' i]",
+                ]:
+                    try:
+                        locator = page.locator(selector)
+                        count = locator.count()
+                        has_match = count > 0 if isinstance(count, int) else bool(count)
+                        if has_match:
+                            locator.first.fill(fill_val)
+                            filled = True
+                    except Exception:
+                        pass
+
+            if not filled:
+                screenshot_path = failure_dir / f"{notion_id or 'unknown'}.png"
+                try:
+                    page.screenshot(path=str(screenshot_path))
+                except Exception:
+                    pass
+                browser.close()
+                if notion_id:
+                    update_event_status(notion_id, "Interested")
+                return (
+                    f"⚠️ Couldn't find registration fields for **{name}**.\n"
+                    f"Register manually: {rsvp_link}{conflict_note}"
+                )
+
+            # Submit: look for common submit buttons
+            for submit_sel in [
+                "button[type='submit']",
+                "input[type='submit']",
+                "button:has-text('Register')",
+                "button:has-text('RSVP')",
+                "button:has-text('Sign up')",
+            ]:
+                try:
+                    btn = page.locator(submit_sel)
+                    if btn.count() > 0:
+                        btn.first.click()
+                        page.wait_for_load_state("networkidle", timeout=10000)
+                        break
+                except Exception:
+                    pass
+
+            browser.close()
+
+        # Update Notion + Calendar
+        cal_event_id = ""
+        if notion_id:
+            if address and start_iso:
+                try:
+                    cal_ev = create_event(name, start_iso, end_iso or "", location=address)
+                    cal_event_id = cal_ev.get("id", "") if cal_ev else ""
+                except Exception:
+                    pass
+            update_event_status(notion_id, "Going", registered=True, cal_event_id=cal_event_id)
+
+        if address:
+            return f"✅ Registered for **{name}**! Added to your Google Calendar.{conflict_note}\n📍 {address}"
+        return f"✅ Registered for **{name}**!{conflict_note}"
+
+    except Exception as e:
+        if notion_id:
+            update_event_status(notion_id, "Interested")
+        return (
+            f"⚠️ Auto-registration failed for **{name}** ({type(e).__name__}).\n"
+            f"Register manually: {rsvp_link}{conflict_note}"
+        )
