@@ -12,6 +12,21 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from integrations.notion.client import get_events, get_progress, add_friend_rsvp, push_event
+from agents.social_agent.handler import handle_intake, run_theme_search
+
+
+class EventIntakeRequest(BaseModel):
+    url: str
+
+
+class ThemeSearchRequest(BaseModel):
+    theme: str
+
+
+class FriendRsvpRequest(BaseModel):
+    name: str
 
 DATA_DIR   = Path(__file__).parent.parent.parent / "data"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -719,6 +734,106 @@ def _investment_status():
         sign = "+" if best["change_pct"] >= 0 else ""
         summary += f" · {best['ticker']} {sign}{best['change_pct']}%"
     return {"label": "Invest", "icon": "📊", "status": "ok", "summary": summary}
+
+
+# ── Events tracker endpoints ───────────────────────────────────────────────────
+
+@app.get("/api/events")
+async def api_events(category: str = "", status: str = ""):
+    """Upcoming events from Notion, with optional category/status filters."""
+    try:
+        kwargs = {"upcoming_only": True}
+        if category:
+            kwargs["category_filter"] = category
+        if status:
+            kwargs["status_filter"] = status
+        events = get_events(**kwargs)
+        return JSONResponse({"events": events, "count": len(events)})
+    except Exception as e:
+        return JSONResponse({"events": [], "count": 0, "error": str(e)})
+
+
+@app.get("/api/events/progress")
+async def api_events_progress():
+    """Progress stats: attended count, by category, heatmap, goal."""
+    try:
+        return JSONResponse(get_progress())
+    except Exception as e:
+        return JSONResponse({"total_attended": 0, "goal": 20, "error": str(e)})
+
+
+@app.post("/api/events/intake")
+async def api_events_intake(req: EventIntakeRequest):
+    """Parse an event URL and add it to Notion."""
+    if not req.url or not req.url.startswith("http"):
+        raise HTTPException(status_code=400, detail="Invalid URL")
+    try:
+        result = await _run_sync(handle_intake, req.url)
+        return JSONResponse({"message": result, "ok": True})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"message": str(e), "ok": False})
+
+
+@app.post("/api/events/rsvp/{notion_id}")
+async def api_events_rsvp(notion_id: str):
+    """Trigger auto-registration for a specific event."""
+    from agents.social_agent.handler import _register_for_event
+    try:
+        events = get_events(upcoming_only=False)
+        event = next((e for e in events if e.get("notion_id") == notion_id), None)
+        if not event:
+            return JSONResponse(status_code=404, content={"message": "Event not found"})
+        result = await _run_sync(_register_for_event, event)
+        return JSONResponse({"message": result, "ok": True})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"message": str(e), "ok": False})
+
+
+@app.post("/api/events/theme-search")
+async def api_events_theme_search(req: ThemeSearchRequest):
+    """Search for events by freeform theme. Does NOT push to Notion."""
+    if not req.theme or not req.theme.strip():
+        raise HTTPException(status_code=400, detail="Theme cannot be empty")
+    try:
+        results = await _run_sync(run_theme_search, req.theme.strip())
+        return JSONResponse({"results": results, "theme": req.theme, "count": len(results)})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"results": [], "error": str(e)})
+
+
+@app.post("/api/events/add")
+async def api_events_add(event: dict):
+    """Push a pre-parsed event dict to Notion (used after theme search 'Add' click)."""
+    try:
+        page_id = await _run_sync(push_event, event)
+        if page_id:
+            return JSONResponse({"ok": True, "notion_id": page_id})
+        return JSONResponse({"ok": False, "message": "Duplicate or save failed"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.post("/api/events/friend-rsvp/{notion_id}")
+async def api_friend_rsvp(notion_id: str, req: FriendRsvpRequest):
+    """Add a friend's name to the Friends Going field."""
+    try:
+        ok = await _run_sync(add_friend_rsvp, notion_id, req.name)
+        if not ok:
+            raise HTTPException(status_code=400, detail="Invalid name or max friends reached")
+        return JSONResponse({"ok": True, "message": f"✅ {req.name} added! See you there."})
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.get("/friends", response_class=HTMLResponse)
+async def friends_page():
+    """Serve the friend collaboration page."""
+    friends_html = STATIC_DIR / "friends.html"
+    if friends_html.exists():
+        return HTMLResponse(friends_html.read_text())
+    return HTMLResponse("<h1>Friends page coming soon</h1>")
 
 
 # ── Serve frontend ─────────────────────────────────────────────────────────────
