@@ -697,13 +697,22 @@ def _bonus_status():
 
 
 def _social_status():
-    cache = _load(DATA_DIR / "social_cache.json")
-    if isinstance(cache, dict) and cache.get("events"):
-        count = len(cache["events"])
-        cached_at = cache.get("cached_at","")
-        return {"label": "Social", "icon": "🎉", "status": "ok",
-                "summary": f"{count} events cached · {_days_ago(cached_at[:10]) if cached_at else '—'}"}
-    return {"label": "Social", "icon": "🎉", "status": "gray", "summary": "Tue/Fri 9 AM auto-scan"}
+    try:
+        from integrations.notion.client import get_progress, _events_db_id
+        if not _events_db_id():
+            return {"label": "Events", "icon": "🗓", "status": "gray", "summary": "Run bootstrap script first"}
+        progress = get_progress()
+        total = progress.get("total_attended", 0)
+        goal = progress.get("goal", 20)
+        tried = len(progress.get("categories_tried", []))
+        return {
+            "label":   "Events",
+            "icon":    "🗓",
+            "status":  "ok" if total > 0 else "gray",
+            "summary": f"{total}/{goal} events attended · {tried}/10 categories tried",
+        }
+    except Exception:
+        return {"label": "Events", "icon": "🗓", "status": "gray", "summary": "Daily scan 8:15 AM ET"}
 
 
 def _mortgage_status():
