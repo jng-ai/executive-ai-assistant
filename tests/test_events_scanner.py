@@ -88,3 +88,34 @@ class TestRunThemeSearch:
         from agents.social_agent.handler import run_theme_search
         results = run_theme_search("")
         assert results == []
+
+
+class TestRunEventScanDaily:
+    def test_returns_no_events_message_when_nothing_pushed(self):
+        import asyncio
+        with patch("agents.social_agent.handler.search", return_value=[]):
+            with patch("agents.social_agent.handler._search_reddit_events", return_value=[]):
+                with patch("agents.social_agent.handler.push_event", return_value=None):
+                    with patch("agents.social_agent.handler.chat", return_value="[]"):
+                        from agents.social_agent.handler import run_event_scan_daily
+                        result = asyncio.run(run_event_scan_daily(bot=None, chat_id=None))
+        assert "no new events" in result.lower() or "scan complete" in result.lower()
+
+    def test_deduplicates_same_rsvp_link(self):
+        import asyncio
+        # Two events with same RSVP link — only one should be pushed
+        two_same = [
+            {"name": "Event A", "rsvp_link": "https://lu.ma/abc", "price": 0, "date": "2026-05-01T10:00:00",
+             "category": "Fitness & Outdoors", "source": "Luma", "venue": "", "address": "", "neighborhood": "", "end_time": None},
+            {"name": "Event A duplicate", "rsvp_link": "https://lu.ma/abc", "price": 0, "date": "2026-05-01T10:00:00",
+             "category": "Fitness & Outdoors", "source": "Luma", "venue": "", "address": "", "neighborhood": "", "end_time": None},
+        ]
+        import json as _json
+        with patch("agents.social_agent.handler.search", return_value=[]):
+            with patch("agents.social_agent.handler._search_reddit_events", return_value=[]):
+                with patch("agents.social_agent.handler.chat", return_value=_json.dumps(two_same)):
+                    with patch("agents.social_agent.handler.push_event", return_value="page-id-1") as mock_push:
+                        from agents.social_agent.handler import run_event_scan_daily
+                        result = asyncio.run(run_event_scan_daily(bot=None, chat_id=None))
+        # push_event should only be called once (dedup)
+        assert mock_push.call_count == 1

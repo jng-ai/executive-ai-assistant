@@ -13,6 +13,7 @@ Features:
 
 import datetime
 import json
+import logging
 import os
 import re
 import requests as _requests
@@ -928,31 +929,34 @@ RULES:
 - If no valid events found, return []"""
 
 
+def _parse_json_response(raw: str):
+    """Strip markdown code fences from LLM output and parse JSON. Returns parsed object or None."""
+    try:
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0]
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
 def _extract_events_from_results(search_text: str, category_hint: str = "") -> list[dict]:
     """
     Use LLM to extract structured event dicts from raw search result text.
     Filters out: price > 80, missing rsvp_link, past dates.
     Returns list of event dicts.
     """
-    import datetime as _dt
     user_prompt = (
-        f"Today is {_dt.date.today().isoformat()}. "
+        f"Today is {datetime.date.today().isoformat()}. "
         f"Category hint: {category_hint}\n\n"
         f"Search results:\n{search_text[:6000]}"
     )
     raw = chat(_EXTRACTION_SYSTEM, user_prompt, max_tokens=2000)
-    try:
-        # Strip markdown code fences if present
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0]
-        events = json.loads(raw)
-        if not isinstance(events, list):
-            return []
-    except Exception:
+    events = _parse_json_response(raw)
+    if events is None or not isinstance(events, list):
         return []
 
-    today = _dt.date.today().isoformat()
+    today = datetime.date.today().isoformat()
     filtered = []
     for ev in events:
         if not isinstance(ev, dict):
@@ -993,7 +997,7 @@ def _search_reddit_events() -> list[str]:
                 url_link = d.get("url", "")
                 texts.append(f"Title: {title}\nText: {selftext}\nURL: {url_link}")
         except Exception as e:
-            print(f"Reddit scan error ({sub}): {e}")
+            logging.warning(f"Reddit scan error ({sub}): {e}")
     return texts
 
 
@@ -1002,7 +1006,6 @@ def handle_intake(url: str) -> str:
     Parse an event URL pasted by the user, extract fields, push to Notion.
     Returns a human-readable confirmation or error string.
     """
-    import datetime as _dt
     if not url.startswith("http"):
         return "That doesn't look like a valid event URL."
     try:
@@ -1010,21 +1013,17 @@ def handle_intake(url: str) -> str:
     except Exception as e:
         return f"Couldn't fetch that URL ({e}). Paste the link again?"
 
-    user_prompt = f"Today is {_dt.date.today().isoformat()}. Event URL: {url}\n\nPage content:\n{page_text[:5000]}"
+    user_prompt = f"Today is {datetime.date.today().isoformat()}. Event URL: {url}\n\nPage content:\n{page_text[:5000]}"
     raw = chat(_EXTRACTION_SYSTEM, user_prompt, max_tokens=800)
-    try:
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0]
-        data = json.loads(raw)
-        if isinstance(data, list) and data:
-            event = data[0]
-        elif isinstance(data, dict):
-            event = data
-        else:
-            return "Couldn't extract event details from that page. Try a different link."
-    except Exception:
+    data = _parse_json_response(raw)
+    if data is None:
         return "Couldn't parse event data from that page. Try a different link."
+    if isinstance(data, list) and data:
+        event = data[0]
+    elif isinstance(data, dict):
+        event = data
+    else:
+        return "Couldn't extract event details from that page. Try a different link."
 
     if not event.get("rsvp_link"):
         event["rsvp_link"] = url
