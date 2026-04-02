@@ -560,7 +560,7 @@ async def api_action(action_name: str):
 async def _run_sync(fn, *args, **kwargs):
     """Run a synchronous function in a thread pool so it doesn't block FastAPI."""
     import asyncio
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
 
 
@@ -747,7 +747,7 @@ async def api_events(category: str = "", status: str = ""):
             kwargs["category_filter"] = category
         if status:
             kwargs["status_filter"] = status
-        events = get_events(**kwargs)
+        events = await _run_sync(get_events, **kwargs)
         return JSONResponse({"events": events, "count": len(events)})
     except Exception as e:
         return JSONResponse({"events": [], "count": 0, "error": str(e)})
@@ -757,7 +757,7 @@ async def api_events(category: str = "", status: str = ""):
 async def api_events_progress():
     """Progress stats: attended count, by category, heatmap, goal."""
     try:
-        return JSONResponse(get_progress())
+        return JSONResponse(await _run_sync(get_progress))
     except Exception as e:
         return JSONResponse({"total_attended": 0, "goal": 20, "error": str(e)})
 
@@ -779,7 +779,7 @@ async def api_events_rsvp(notion_id: str):
     """Trigger auto-registration for a specific event."""
     from agents.social_agent.handler import _register_for_event
     try:
-        events = get_events(upcoming_only=False)
+        events = await _run_sync(get_events, upcoming_only=False)
         event = next((e for e in events if e.get("notion_id") == notion_id), None)
         if not event:
             return JSONResponse(status_code=404, content={"message": "Event not found"})

@@ -100,6 +100,21 @@ class TestThemeSearch:
         assert resp.status_code == 400
 
 
+class TestEventsRsvpEndpoint:
+    def test_event_not_found_returns_404(self, client):
+        with patch("integrations.web.server.get_events", return_value=[]):
+            resp = client.post("/api/events/rsvp/nonexistent-id")
+        assert resp.status_code == 404
+
+    def test_valid_event_triggers_registration(self, client):
+        from agents.social_agent.handler import _register_for_event
+        with patch("integrations.web.server.get_events", return_value=SAMPLE_EVENTS):
+            with patch("agents.social_agent.handler._register_for_event", return_value="✅ Registered!"):
+                resp = client.post("/api/events/rsvp/page-1")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+
 class TestFriendRsvpEndpoint:
     def test_valid_rsvp_returns_success(self, client):
         with patch("integrations.web.server.add_friend_rsvp", return_value=True):
