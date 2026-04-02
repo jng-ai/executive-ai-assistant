@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Justin's NYC Events — Join Me!</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#070e1a;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100vh;padding:1rem}
+header{text-align:center;padding:1.5rem 1rem;margin-bottom:1.5rem}
+header h1{font-size:1.2rem;font-weight:800;color:#38bdf8}
+header p{font-size:.85rem;color:#6b8099;margin-top:.3rem}
+.event-card{background:#0d1b2a;border:1px solid #1e3a52;border-radius:12px;padding:1rem 1.1rem;margin-bottom:.8rem;max-width:620px;margin-left:auto;margin-right:auto}
+.event-name{font-size:.95rem;font-weight:700;margin-bottom:.3rem}
+.event-meta{font-size:.78rem;color:#6b8099;margin-bottom:.5rem;line-height:1.6}
+.event-meta strong{color:#e2e8f0}
+.badges{display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.7rem}
+.badge{display:inline-block;border-radius:5px;padding:2px 8px;font-size:.7rem}
+.rsvp-btn{display:inline-block;background:#1e3a52;border-radius:7px;color:#38bdf8;font-size:.78rem;padding:.4rem .8rem;text-decoration:none;margin-right:.4rem}
+.join-form{margin-top:.8rem;padding-top:.8rem;border-top:1px solid #1e3a52;display:flex;gap:.4rem}
+.join-input{flex:1;background:#112236;border:1px solid #1e3a52;border-radius:7px;padding:.4rem .6rem;color:#e2e8f0;font-size:.78rem}
+.join-btn{background:#f472b6;border:none;border-radius:7px;color:#0d1b2a;font-size:.78rem;font-weight:700;padding:.4rem .8rem;cursor:pointer}
+.join-success{font-size:.75rem;color:#4ade80;margin-top:.4rem}
+.no-events{text-align:center;padding:3rem 1rem;color:#6b8099;font-size:.85rem}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🗓 Justin's NYC Events</h1>
+  <p>Upcoming events Justin is going to — join him!</p>
+</header>
+
+<div id="events-container">
+  <div class="no-events">Loading events…</div>
+</div>
+
+<script>
+const CAT_EMOJI = {
+  "Fitness & Outdoors":"💪","Dating & Meetups":"💘","Food & Drinks":"🍜",
+  "Painting & Visual Arts":"🎨","Ceramics & Crafts":"🏺","Games & Trivia":"🎲",
+  "Performing Arts":"🎭","Community & Clubs":"🤝","Professional":"💼","Nightlife":"🎉"
+};
+const CAT_COLOR = {
+  "Fitness & Outdoors":"#4ade80","Dating & Meetups":"#f472b6","Food & Drinks":"#fb923c",
+  "Painting & Visual Arts":"#a78bfa","Ceramics & Crafts":"#fbbf24","Games & Trivia":"#34d399",
+  "Performing Arts":"#f87171","Community & Clubs":"#38bdf8","Professional":"#94a3b8","Nightlife":"#e879f9"
+};
+const MONTHS = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+
+async function loadEvents() {
+  try {
+    const r = await fetch('/api/events?status=Going');
+    const d = await r.json();
+    const events = d.events || [];
+    const container = document.getElementById('events-container');
+
+    if (!events.length) {
+      container.innerHTML = '<div class="no-events">No upcoming events yet. Check back soon!</div>';
+      return;
+    }
+
+    container.innerHTML = events.map(ev => {
+      const dateStr = (ev.date || '').slice(0,10);
+      const timeStr = ev.date && ev.date.length > 10 ? ev.date.slice(11,16) : '';
+      const monthIdx = dateStr ? parseInt(dateStr.slice(5,7)) - 1 : -1;
+      const day = dateStr ? dateStr.slice(8,10) : '?';
+      const price = ev.price === 0 ? 'Free' : `$${ev.price}`;
+      const emoji = CAT_EMOJI[ev.category] || '📌';
+      const color = CAT_COLOR[ev.category] || '#6b8099';
+      const friends = ev.friends_going ? ev.friends_going.split(',').map(s=>s.trim()).filter(Boolean) : [];
+      const friendsStr = friends.length ? `👥 ${friends.join(', ')} going` : '';
+
+      return `<div class="event-card" id="card-${ev.notion_id}">
+        <div style="display:flex;gap:.7rem;align-items:flex-start;margin-bottom:.4rem">
+          <div style="background:#172c43;border-radius:5px;padding:.2rem .4rem;text-align:center;min-width:34px;flex-shrink:0">
+            <div style="font-size:.6rem;color:#38bdf8;font-weight:700">${monthIdx>=0?MONTHS[monthIdx]:''}</div>
+            <div style="font-size:1rem;font-weight:800">${day}</div>
+          </div>
+          <div>
+            <div class="event-name">${ev.name}</div>
+            <div class="event-meta">
+              ${ev.address ? `<strong>📍</strong> ${ev.address}<br>` : ev.venue ? `<strong>📍</strong> ${ev.venue}<br>` : ''}
+              ${timeStr ? `<strong>🕐</strong> ${timeStr} &nbsp;` : ''}
+              <strong>💰</strong> ${price} &nbsp;
+              <strong>📌</strong> ${ev.source || ''}
+              ${friendsStr ? `<br><span style="color:#f472b6">${friendsStr}</span>` : ''}
+            </div>
+          </div>
+        </div>
+        <div class="badges">
+          <span class="badge" style="background:#1a1a2e;color:${color}">${emoji} ${ev.category||''}</span>
+          <span class="badge" style="background:#1a2d25;color:#4ade80">Going ✓</span>
+        </div>
+        ${ev.rsvp_link ? `<a href="${ev.rsvp_link}" target="_blank" class="rsvp-btn">Get tickets →</a>` : ''}
+        <div class="join-form">
+          <input class="join-input" type="text" placeholder="Your name" id="name-${ev.notion_id}" maxlength="40" />
+          <button class="join-btn" onclick="joinEvent('${ev.notion_id}')">I'm in! 🙋</button>
+        </div>
+        <div class="join-success" id="success-${ev.notion_id}" style="display:none"></div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    document.getElementById('events-container').innerHTML =
+      '<div class="no-events">Couldn\'t load events. Try refreshing.</div>';
+  }
+}
+
+async function joinEvent(notionId) {
+  const input = document.getElementById(`name-${notionId}`);
+  const name = input.value.trim();
+  if (!name) { input.focus(); return; }
+  try {
+    const r = await fetch(`/api/events/friend-rsvp/${notionId}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name})
+    });
+    const d = await r.json();
+    const msg = document.getElementById(`success-${notionId}`);
+    if (d.ok) {
+      msg.textContent = d.message || `✅ You're in, ${name}! Justin will be notified.`;
+      msg.style.display = 'block';
+      input.value = '';
+      input.disabled = true;
+      document.querySelector(`#card-${notionId} .join-btn`).disabled = true;
+    } else {
+      msg.style.color = '#f87171';
+      msg.textContent = d.detail || 'Could not add you. Try again.';
+      msg.style.display = 'block';
+    }
+  } catch(e) {
+    const msg = document.getElementById(`success-${notionId}`);
+    msg.style.color = '#f87171';
+    msg.textContent = 'Network error. Try refreshing.';
+    msg.style.display = 'block';
+  }
+}
+
+loadEvents();
+</script>
+
+</body>
+</html>
