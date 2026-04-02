@@ -733,7 +733,13 @@ function shimmer(n) {
   }).join('');
 }
 function esc(s) {
-  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  if (s === null || s === undefined) return '';
+  if (typeof s === 'number') return String(s);
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
 }
 function sparkline(vals, labels) {
   if (vals.length < 2) return '';
@@ -877,24 +883,25 @@ function renderEvents(events) {
         ? `<span style="background:#172c43;border-radius:4px;padding:1px 5px;font-size:.65rem;color:#fbbf24">New</span>`
         : `<span style="background:#1a2030;border-radius:4px;padding:1px 5px;font-size:.65rem;color:#6b8099">${ev.status}</span>`;
     const friendsBadge = ev.friends_going
-      ? `<span style="font-size:.65rem;color:#f472b6">👥 ${ev.friends_going}</span>` : '';
+      ? `<span style="font-size:.65rem;color:#f472b6">👥 ${esc(ev.friends_going)}</span>` : '';
+    const safeRsvp = (ev.rsvp_link || '').startsWith('https://') ? ev.rsvp_link : '';
     return `<div style="background:#112236;border:1px solid #1e3a52;border-radius:8px;padding:.55rem .7rem;display:flex;gap:.6rem;align-items:flex-start">
       <div style="background:#172c43;border-radius:4px;padding:.2rem .35rem;text-align:center;min-width:30px;flex-shrink:0">
         <div style="font-size:.55rem;color:#38bdf8;font-weight:700">${dateStr.slice(5,7)? ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'][parseInt(dateStr.slice(5,7))-1] : ''}</div>
         <div style="font-size:.85rem;font-weight:800;color:#e2e8f0">${dateStr.slice(8,10)||'?'}</div>
       </div>
       <div style="flex:1;min-width:0">
-        <div style="font-size:.78rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${ev.name}</div>
-        <div style="font-size:.68rem;color:#6b8099;margin-top:.15rem">${ev.address || ev.venue || ''}${timeStr ? ' · '+timeStr : ''} · ${price} · ${ev.source||''}</div>
+        <div style="font-size:.78rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ev.name)}</div>
+        <div style="font-size:.68rem;color:#6b8099;margin-top:.15rem">${esc(ev.address || ev.venue || '')}${timeStr ? ' · '+timeStr : ''} · ${price} · ${esc(ev.source||'')}</div>
         <div style="display:flex;gap:.3rem;margin-top:.25rem;flex-wrap:wrap;align-items:center">
-          <span style="background:#1a1a2e;border-radius:4px;padding:1px 5px;font-size:.65rem;color:${color}">${emoji} ${ev.category||''}</span>
+          <span style="background:#1a1a2e;border-radius:4px;padding:1px 5px;font-size:.65rem;color:${color}">${emoji} ${esc(ev.category||'')}</span>
           ${statusBadge}
           ${friendsBadge}
         </div>
       </div>
       <div style="display:flex;flex-direction:column;gap:.3rem;flex-shrink:0">
         ${ev.status !== 'Going' && ev.status !== 'Attended' ? `<button onclick="signMeUp('${ev.notion_id}')" style="background:#38bdf8;border:none;border-radius:5px;color:#070e1a;font-size:.65rem;font-weight:700;padding:.25rem .5rem;cursor:pointer">Sign me up</button>` : ''}
-        ${ev.rsvp_link ? `<a href="${ev.rsvp_link}" target="_blank" style="background:#1e3a52;border-radius:5px;color:#38bdf8;font-size:.65rem;padding:.25rem .5rem;text-decoration:none;text-align:center">RSVP →</a>` : ''}
+        ${safeRsvp ? `<a href="${safeRsvp}" target="_blank" style="background:#1e3a52;border-radius:5px;color:#38bdf8;font-size:.65rem;padding:.25rem .5rem;text-decoration:none;text-align:center">RSVP →</a>` : ''}
       </div>
     </div>`;
   }).join('');
@@ -920,6 +927,12 @@ async function addEventUrl() {
   const url = document.getElementById('intake-url').value.trim();
   const msg = document.getElementById('intake-msg');
   if (!url) return;
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    msg.style.display = 'block';
+    msg.style.color = '#f87171';
+    msg.textContent = 'Please enter a valid URL (must start with http:// or https://)';
+    return;
+  }
   msg.style.display = 'block';
   msg.style.color = '#6b8099';
   msg.textContent = 'Adding…';
@@ -956,9 +969,9 @@ async function searchTheme() {
       const dateStr = (ev.date||'').slice(0,10);
       return `<div style="background:#112236;border:1px solid #1e3a52;border-radius:7px;padding:.5rem .6rem;display:flex;justify-content:space-between;align-items:center;gap:.5rem">
         <div>
-          <div style="font-size:.75rem;font-weight:600">${ev.name}</div>
-          <div style="font-size:.67rem;color:#6b8099">${dateStr} · ${ev.address||ev.venue||''} · ${price}</div>
-          <div style="font-size:.67rem;color:#6b8099">📌 ${ev.source||''} · ${ev.category||''}</div>
+          <div style="font-size:.75rem;font-weight:600">${esc(ev.name)}</div>
+          <div style="font-size:.67rem;color:#6b8099">${esc(dateStr)} · ${esc(ev.address||ev.venue||'')} · ${esc(price)}</div>
+          <div style="font-size:.67rem;color:#6b8099">📌 ${esc(ev.source||'')} · ${esc(ev.category||'')}</div>
         </div>
         <button onclick="addThemeEvent(${i})" style="background:#1e3a52;border:none;border-radius:5px;color:#38bdf8;font-size:.67rem;padding:.25rem .55rem;cursor:pointer;white-space:nowrap">+ Add</button>
       </div>`;

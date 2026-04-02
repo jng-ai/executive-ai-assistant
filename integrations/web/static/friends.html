@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta name="robots" content="noindex,nofollow"/>
 <title>Justin's NYC Events — Join Me!</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -36,6 +37,16 @@ header p{font-size:.85rem;color:#6b8099;margin-top:.3rem}
 </div>
 
 <script>
+function esc(s) {
+  if (s === null || s === undefined) return '';
+  if (typeof s === 'number') return String(s);
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+
 const CAT_EMOJI = {
   "Fitness & Outdoors":"💪","Dating & Meetups":"💘","Food & Drinks":"🍜",
   "Painting & Visual Arts":"🎨","Ceramics & Crafts":"🏺","Games & Trivia":"🎲",
@@ -68,31 +79,32 @@ async function loadEvents() {
       const price = ev.price === 0 ? 'Free' : `$${ev.price}`;
       const emoji = CAT_EMOJI[ev.category] || '📌';
       const color = CAT_COLOR[ev.category] || '#6b8099';
-      const friends = ev.friends_going ? ev.friends_going.split(',').map(s=>s.trim()).filter(Boolean) : [];
+      const friends = ev.friends_going ? ev.friends_going.split(',').map(s=>esc(s.trim())).filter(Boolean) : [];
       const friendsStr = friends.length ? `👥 ${friends.join(', ')} going` : '';
+      const safeRsvp = (ev.rsvp_link || '').startsWith('https://') ? ev.rsvp_link : '';
 
-      return `<div class="event-card" id="card-${ev.notion_id}">
+      return `<div class="event-card" id="ev-card-${ev.notion_id}">
         <div style="display:flex;gap:.7rem;align-items:flex-start;margin-bottom:.4rem">
           <div style="background:#172c43;border-radius:5px;padding:.2rem .4rem;text-align:center;min-width:34px;flex-shrink:0">
             <div style="font-size:.6rem;color:#38bdf8;font-weight:700">${monthIdx>=0?MONTHS[monthIdx]:''}</div>
             <div style="font-size:1rem;font-weight:800">${day}</div>
           </div>
           <div>
-            <div class="event-name">${ev.name}</div>
+            <div class="event-name">${esc(ev.name)}</div>
             <div class="event-meta">
-              ${ev.address ? `<strong>📍</strong> ${ev.address}<br>` : ev.venue ? `<strong>📍</strong> ${ev.venue}<br>` : ''}
+              ${ev.address ? `<strong>📍</strong> ${esc(ev.address)}<br>` : ev.venue ? `<strong>📍</strong> ${esc(ev.venue)}<br>` : ''}
               ${timeStr ? `<strong>🕐</strong> ${timeStr} &nbsp;` : ''}
               <strong>💰</strong> ${price} &nbsp;
-              <strong>📌</strong> ${ev.source || ''}
+              <strong>📌</strong> ${esc(ev.source || '')}
               ${friendsStr ? `<br><span style="color:#f472b6">${friendsStr}</span>` : ''}
             </div>
           </div>
         </div>
         <div class="badges">
-          <span class="badge" style="background:#1a1a2e;color:${color}">${emoji} ${ev.category||''}</span>
+          <span class="badge" style="background:#1a1a2e;color:${color}">${emoji} ${esc(ev.category||'')}</span>
           <span class="badge" style="background:#1a2d25;color:#4ade80">Going ✓</span>
         </div>
-        ${ev.rsvp_link ? `<a href="${ev.rsvp_link}" target="_blank" class="rsvp-btn">Get tickets →</a>` : ''}
+        ${safeRsvp ? `<a href="${safeRsvp}" target="_blank" class="rsvp-btn">Get tickets →</a>` : ''}
         <div class="join-form">
           <input class="join-input" type="text" placeholder="Your name" id="name-${ev.notion_id}" maxlength="40" />
           <button class="join-btn" onclick="joinEvent('${ev.notion_id}')">I'm in! 🙋</button>
@@ -123,7 +135,8 @@ async function joinEvent(notionId) {
       msg.style.display = 'block';
       input.value = '';
       input.disabled = true;
-      document.querySelector(`#card-${notionId} .join-btn`).disabled = true;
+      const card = document.getElementById(`ev-card-${notionId}`);
+      if (card) card.querySelector('.join-btn').disabled = true;
     } else {
       msg.style.color = '#f87171';
       msg.textContent = d.detail || 'Could not add you. Try again.';
