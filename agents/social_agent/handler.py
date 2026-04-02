@@ -15,7 +15,6 @@ import datetime
 import json
 import logging
 import os
-import os as _os
 import pathlib
 import re
 import requests as _requests
@@ -1497,8 +1496,8 @@ def _check_calendar_conflict(start_iso: str, end_iso: str) -> str | None:
     """
     try:
         events = list_events(days_ahead=30)
-        start_dt = datetime.datetime.fromisoformat(start_iso)
-        end_dt = datetime.datetime.fromisoformat(end_iso) if end_iso else start_dt + datetime.timedelta(hours=2)
+        start_dt = datetime.datetime.fromisoformat(start_iso.replace("Z", "+00:00")).replace(tzinfo=None)
+        end_dt = datetime.datetime.fromisoformat(end_iso.replace("Z", "+00:00")).replace(tzinfo=None) if end_iso else start_dt + datetime.timedelta(hours=2)
         for ev in events:
             ev_start = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date", "")
             ev_end   = ev.get("end",   {}).get("dateTime") or ev.get("end",   {}).get("date", "")
@@ -1541,8 +1540,8 @@ def _register_for_event(event: dict, skip_playwright: bool = False) -> str:
 
     # Playwright registration
     user_name = "Justin Ngai"
-    user_email = _os.environ.get("JUSTIN_EMAIL", "jngai5.3@gmail.com")
-    user_phone = _os.environ.get("JUSTIN_PHONE", "")
+    user_email = os.environ.get("JUSTIN_EMAIL", "jngai5.3@gmail.com")
+    user_phone = os.environ.get("JUSTIN_PHONE", "")
 
     failure_dir = pathlib.Path(__file__).parent.parent.parent / "data" / "reg_failures"
     failure_dir.mkdir(exist_ok=True)

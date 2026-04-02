@@ -1,6 +1,6 @@
 # tests/test_events_registration.py
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock
 
 
 SAMPLE_EVENT = {
@@ -35,6 +35,11 @@ class TestRegisterForEvent:
                     from agents.social_agent.handler import _register_for_event
                     result = _register_for_event(SAMPLE_EVENT)
         assert "success" in result.lower() or "registered" in result.lower() or "going" in result.lower()
+        mock_update.assert_called_once()
+        # Verify it was called with "Going" and registered=True
+        call_args = mock_update.call_args
+        assert call_args[0][1] == "Going"
+        assert call_args[1].get("registered") is True
 
     def test_register_captcha_detected_returns_link(self):
         mock_page = MagicMock()
@@ -52,6 +57,29 @@ class TestRegisterForEvent:
                 from agents.social_agent.handler import _register_for_event
                 result = _register_for_event(SAMPLE_EVENT)
         assert "captcha" in result.lower() or "manually" in result.lower() or "link" in result.lower()
+
+    def test_register_no_fields_found_returns_manual_link(self):
+        mock_page = MagicMock()
+        # Page has no CAPTCHA but no fillable inputs (locator.count() returns 0)
+        mock_page.content.return_value = "<html><p>Register here</p></html>"
+        mock_page.goto = MagicMock()
+        mock_locator = MagicMock()
+        mock_locator.count.return_value = 0
+        mock_page.locator.return_value = mock_locator
+        mock_browser = MagicMock()
+        mock_browser.new_page.return_value = mock_page
+        mock_playwright = MagicMock()
+        mock_playwright.__enter__ = MagicMock(return_value=mock_playwright)
+        mock_playwright.__exit__ = MagicMock(return_value=False)
+        mock_playwright.chromium.launch.return_value = mock_browser
+
+        with patch("agents.social_agent.handler.sync_playwright", return_value=mock_playwright):
+            with patch("agents.social_agent.handler.update_event_status") as mock_update:
+                with patch("agents.social_agent.handler._check_calendar_conflict", return_value=None):
+                    from agents.social_agent.handler import _register_for_event
+                    result = _register_for_event(SAMPLE_EVENT)
+        assert "manually" in result.lower() or "couldn't find" in result.lower()
+        mock_update.assert_called_once()
 
     def test_register_calendar_conflict_noted_in_result(self):
         with patch("agents.social_agent.handler._check_calendar_conflict", return_value="Work meeting"):
