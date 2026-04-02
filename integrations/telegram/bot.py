@@ -4,6 +4,8 @@ Handles text messages, voice messages, and photos.
 """
 
 import os
+import re
+import time as _time
 import asyncio
 import logging
 import base64
@@ -12,13 +14,21 @@ from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
 from core.command_router import classify
 from core.conversation import add_turn, format_context
-from core.memory import add_task, log_health, list_tasks
+from core.memory import log_health, list_tasks
+from agents.task_agent.handler import handle as task_handle, run_reminder_check
 from agents.infusion_agent.handler import handle as infusion_handle
 from agents.mortgage_note_agent.handler import handle as mortgage_handle
 from agents.investment_agent.handler import handle as investment_handle
 from agents.travel_agent.handler import handle as travel_handle
-from agents.health_agent.handler import handle as health_handle, run_daily_nudge, run_lunch_nudge, run_dinner_nudge, run_breakfast_nudge
-from agents.social_agent.handler import handle as social_handle, run_event_scan
+from agents.health_agent.handler import handle as health_handle, handle_food_correction, extract_exercise_images, run_daily_nudge, run_lunch_nudge, run_dinner_nudge, run_breakfast_nudge, run_workout_reminder, run_weekly_health_report, run_monthly_health_report
+from agents.social_agent.handler import (
+    handle as social_handle,
+    run_event_scan,          # keep for backward compat (old job still references it until replaced)
+    run_event_scan_daily,
+    handle_intake,
+    _register_for_event,
+)
+from integrations.notion.client import get_events, update_event_status, get_friends_going
 from agents.finance_agent.handler import handle as finance_handle, run_weekly_board_briefing
 from agents.investment_agent.handler import run_vix_dca_check
 from agents.bonus_alert.handler import handle as bonus_alert_handle, run_bonus_scan
@@ -29,12 +39,60 @@ from agents.followup_agent.handler import handle as followup_handle, run_pending
 from agents.general_handler import handle_general
 from integrations.telegram.dashboard import build_main_dashboard, build_agent_dashboard
 from integrations.image_pipeline import route_image, _try_create_calendar_event, last_event_cache as _image_event_cache
+from agents.podcast_agent.handler import run_daily_podcast
+from agents.podcast_agent.server import start_server as start_podcast_server
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ── Per-user context caches ───────────────────────────────────────────────────
 
 # _last_event_cache lives in integrations/image_pipeline.py (imported as _image_event_cache)
+
+# Tracks the most recent food/drink/snack log per user for correction detection
+# Structure: user_id → {"metric": str, "value": str, "ts": float}
+_last_health_log: dict[int, dict] = {}
+
+# Correction detection: patterns that strongly suggest a quantity/detail correction
+_CORRECTION_RE = re.compile(
+    r"""
+    ^\d+\.?\d*\s*(pieces?|servings?|slices?|cups?|oz|g|ml|sticks?|scoops?|bites?|portions?)$
+    | ^(actually|it\s+was|that\s+was|i\s+meant|correction|just|only)\b
+    | ^\d+$                                  # bare number
+    | ^(about\s+)?\d+\s+(of\s+them|more)?$  # "about 3", "3 of them"
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+_CORRECTION_TIMEOUT_SECS = 300  # 5 minutes
+
+
+def _is_food_correction(text: str, last_log: dict) -> bool:
+    """Return True if the message looks like a correction/addendum to the last food log."""
+    if _time.time() - last_log.get("ts", 0) > _CORRECTION_TIMEOUT_SECS:
+        return False
+    return bool(_CORRECTION_RE.match(text.strip()))
+
+
+async def _send_workout_images(update: Update, response: str) -> None:
+    """
+    If the response is a workout suggestion table, send exercise demo thumbnails
+    as a Telegram photo album (max 6 images, fails silently).
+    """
+    # Only fire for workout suggestions (contain the 💪 emoji and a table)
+    if "💪" not in response or "| Exercise |" not in response:
+        return
+    images = await asyncio.to_thread(extract_exercise_images, response)
+    if not images:
+        return
+    from telegram import InputMediaPhoto
+    # Telegram media group: 2–10 items
+    images = images[:6]
+    media = [InputMediaPhoto(media=thumb, caption=name) for name, thumb in images]
+    try:
+        await update.message.reply_media_group(media=media)
+    except Exception as e:
+        logger.warning(f"Could not send exercise images: {e}")
 
 
 # ── Photo handler — triage then route ────────────────────────────────────────
@@ -81,6 +139,24 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     response, _ = await asyncio.to_thread(route_image, image_b64, caption, user_id)
 
+    # Track food photo logs so follow-up messages like "5 pieces" can correct them
+    if image_type == "food" and response.startswith("✅"):
+        # Try to extract the logged food description from the response
+        m = re.search(r"Logged: \*(\w+)\*\n_(.+?)_", response)
+        if m:
+            _last_health_log[user_id] = {
+                "metric": m.group(1).lower(),
+                "value": m.group(2),
+                "ts": _time.time(),
+            }
+        else:
+            # Fall back: store the caption or generic "food photo"
+            _last_health_log[user_id] = {
+                "metric": "meal",
+                "value": caption or "food from photo",
+                "ts": _time.time(),
+            }
+
     if len(response) > 4000:
         for i in range(0, len(response), 4000):
             await update.message.reply_text(response[i:i+4000], parse_mode="Markdown")
@@ -120,6 +196,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(response[i:i+4000], parse_mode="Markdown")
     else:
         await update.message.reply_text(response, parse_mode="Markdown")
+
+    # Send exercise demo thumbnails for voice workout requests
+    if intent == "log_health":
+        await _send_workout_images(update, response)
 
     # Reply with voice message too
     voice_file = await asyncio.to_thread(_text_to_voice, response)
@@ -230,6 +310,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(response, parse_mode="Markdown")
             return
 
+    # ── Food correction detection ─────────────────────────────────────────────
+    # If the last bot action was logging a food item and this message looks like
+    # a quantity correction (e.g. "5 pieces", "100g", "actually 3"), update that log.
+    last_log = _last_health_log.get(user_id)
+    if last_log and _is_food_correction(text, last_log):
+        response = await asyncio.to_thread(
+            handle_food_correction, text, last_log["metric"], last_log["value"]
+        )
+        _last_health_log.pop(user_id, None)  # clear after handling
+        add_turn(text, response, agent="log_health")
+        if len(response) > 4000:
+            for i in range(0, len(response), 4000):
+                await update.message.reply_text(response[i:i+4000], parse_mode="Markdown")
+        else:
+            await update.message.reply_text(response, parse_mode="Markdown")
+        return
+
     # Include recent history so the classifier resolves pronouns like
     # "cancel that", "send it to him", "reschedule for Friday"
     ctx = format_context(n=3)
@@ -239,6 +336,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     params = classified.get("params", {})
 
     response = await dispatch(intent, details, params, text)
+
+    # ── Post-dispatch: track food logs for correction detection ───────────────
+    if intent == "log_health" and response.startswith("✅ Logged:"):
+        # Extract what was logged from the response (metric is after "Logged: *")
+        m = re.search(r"Logged: \*(\w+)\*\n_(.+?)_", response)
+        if m:
+            _last_health_log[user_id] = {
+                "metric": m.group(1).lower(),
+                "value": m.group(2),
+                "ts": _time.time(),
+            }
+        else:
+            # Store generic so correction still works
+            _last_health_log[user_id] = {"metric": "meal", "value": text, "ts": _time.time()}
+    elif intent != "log_health":
+        # Clear last food log if user sends unrelated message
+        _last_health_log.pop(user_id, None)
 
     # Record this turn so future messages have context
     add_turn(text, response, agent=intent)
@@ -250,13 +364,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(response, parse_mode="Markdown")
 
+    # Send exercise demo thumbnails after workout suggestion
+    if intent == "log_health":
+        await _send_workout_images(update, response)
+
 
 async def dispatch(intent: str, details: str, params: dict, raw: str) -> str:
     """Route to the correct handler based on intent."""
 
     if intent == "create_task":
-        entry = add_task(details, due=params.get("due", ""))
-        return f"✅ Task saved: *{details}*\nID: #{entry['id']}"
+        return await asyncio.to_thread(task_handle, raw)
 
     elif intent == "log_health":
         return await asyncio.to_thread(health_handle, raw)
@@ -275,6 +392,10 @@ async def dispatch(intent: str, details: str, params: dict, raw: str) -> str:
 
     elif intent == "nyc_events":
         return await asyncio.to_thread(social_handle, details)
+
+    elif intent == "event_intake":
+        url = params.get("url") or raw.strip()
+        return await asyncio.to_thread(handle_intake, url)
 
     elif intent == "personal_finance":
         return await asyncio.to_thread(finance_handle, raw)
@@ -492,6 +613,20 @@ async def _scheduled_origin_refresh(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Origin refresh error: {e}")
 
 
+async def _scheduled_podcast(context: ContextTypes.DEFAULT_TYPE):
+    """Daily Justin Brief podcast — runs at 8:30 AM ET."""
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    try:
+        await run_daily_podcast(bot=context.bot, chat_id=chat_id)
+    except Exception as e:
+        logger.error(f"Podcast generation error: {e}")
+        if chat_id:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ Podcast generation failed: {e}",
+            )
+
+
 async def _scheduled_bonus_scan(context: ContextTypes.DEFAULT_TYPE):
     """Daily bonus alert scan — runs automatically at 8 AM."""
     try:
@@ -557,6 +692,49 @@ async def _scheduled_dinner_nudge(context: ContextTypes.DEFAULT_TYPE):
             )
     except Exception as e:
         logger.warning("Dinner nudge error: %s", e)
+
+
+async def _scheduled_weekly_health_report(context: ContextTypes.DEFAULT_TYPE):
+    """Sunday 8 PM ET — comprehensive weekly health report."""
+    try:
+        msg = await asyncio.to_thread(run_weekly_health_report)
+        if msg:
+            chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+            if chat_id:
+                for i in range(0, len(msg), 4000):
+                    await context.bot.send_message(chat_id=chat_id, text=msg[i:i+4000], parse_mode="Markdown")
+    except Exception as e:
+        logger.error("Weekly health report error: %s", e)
+
+
+async def _scheduled_monthly_health_report(context: ContextTypes.DEFAULT_TYPE):
+    """1st of month 9 AM ET — monthly health debrief."""
+    try:
+        import datetime as dt
+        if dt.date.today().day != 1:
+            return
+        msg = await asyncio.to_thread(run_monthly_health_report)
+        if msg:
+            chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+            if chat_id:
+                for i in range(0, len(msg), 4000):
+                    await context.bot.send_message(chat_id=chat_id, text=msg[i:i+4000], parse_mode="Markdown")
+    except Exception as e:
+        logger.error("Monthly health report error: %s", e)
+
+
+async def _scheduled_workout_reminder(context: ContextTypes.DEFAULT_TYPE):
+    """7:00 PM ET — remind to log a workout if none recorded today."""
+    try:
+        msg = await asyncio.to_thread(run_workout_reminder)
+        if msg:
+            await context.bot.send_message(
+                chat_id=os.environ["TELEGRAM_CHAT_ID"],
+                text=msg,
+                parse_mode="Markdown",
+            )
+    except Exception as e:
+        logger.warning("Workout reminder error: %s", e)
 
 
 async def _scheduled_eod_wrapup(context: ContextTypes.DEFAULT_TYPE):
@@ -670,6 +848,21 @@ async def _scheduled_board_briefing(context: ContextTypes.DEFAULT_TYPE):
         logger.error("Weekly board briefing error: %s", e)
 
 
+async def _scheduled_reminder_check(context: ContextTypes.DEFAULT_TYPE):
+    """Every 30 min: fire any due task/reminder notifications."""
+    try:
+        messages = await asyncio.to_thread(run_reminder_check)
+        if messages:
+            chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+            if chat_id:
+                for msg in messages:
+                    await context.bot.send_message(
+                        chat_id=chat_id, text=msg, parse_mode="Markdown"
+                    )
+    except Exception as e:
+        logger.error(f"Reminder check error: {e}")
+
+
 async def _scheduled_event_scan(context: ContextTypes.DEFAULT_TYPE):
     """
     Twice-weekly NYC event scan — Tuesdays + Fridays at 9 AM ET.
@@ -692,6 +885,112 @@ async def _scheduled_event_scan(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Scheduled event scan error: {e}")
 
 
+async def handle_event_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline button callbacks for event registration and post-event confirmation."""
+    import asyncio
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+    chat_id = query.message.chat_id
+
+    if data.startswith("event_register:"):
+        notion_id = data.split(":", 1)[1]
+        events = get_events()
+        event = next((e for e in events if e.get("notion_id") == notion_id), None)
+        if not event:
+            await query.edit_message_text("⚠️ Couldn't find that event. It may have been removed.")
+            return
+        await query.edit_message_text(f"⏳ Registering you for **{event['name']}**...", parse_mode="Markdown")
+        result = await asyncio.to_thread(_register_for_event, event)
+        await context.bot.send_message(chat_id=chat_id, text=result, parse_mode="Markdown")
+
+    elif data.startswith("event_attended:"):
+        notion_id = data.split(":", 1)[1]
+        update_event_status(notion_id, "Attended")
+        await query.edit_message_text("✅ Great! Marked as attended. Progress updated.")
+
+    elif data.startswith("event_skipped:"):
+        notion_id = data.split(":", 1)[1]
+        update_event_status(notion_id, "Skipped")
+        await query.edit_message_text("👎 No worries — marked as skipped.")
+
+
+async def run_post_event_check(bot, chat_id: str):
+    """
+    Daily 9:00 AM: find Status=Going events that ended. Ask 'Did you go?'
+    Caps at 3 per run to avoid spam.
+    """
+    import datetime as _dt
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    now = _dt.datetime.now()
+    events = get_events(status_filter="Going", upcoming_only=False)
+    to_check = []
+    for ev in events:
+        end = ev.get("end_time") or ev.get("date")
+        if not end:
+            continue
+        try:
+            end_dt = _dt.datetime.fromisoformat(end)
+            days_ago = (now - end_dt).days
+            if 0 < days_ago <= 3:
+                to_check.append(ev)
+        except Exception:
+            pass
+
+    for ev in to_check[:3]:
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("👍 Yes!", callback_data=f"event_attended:{ev['notion_id']}"),
+            InlineKeyboardButton("👎 No",   callback_data=f"event_skipped:{ev['notion_id']}"),
+        ]])
+        date_str = (ev.get("date") or "")[:10]
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f"Did you make it to **{ev['name']}**{' on ' + date_str if date_str else ''}? 🎉",
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
+
+
+async def _poll_friend_rsvps(bot, chat_id: str):
+    """Poll Notion every 15 min for new friend RSVPs. Notify Justin on change."""
+    import json
+    from pathlib import Path
+
+    cache_path = Path(__file__).parent.parent.parent / "data" / "events_friends_cache.json"
+    try:
+        cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
+    except Exception:
+        cache = {}
+
+    going_events = get_events(status_filter="Going")
+    updated = False
+
+    for ev in going_events:
+        nid = ev["notion_id"]
+        current_friends = get_friends_going(nid)
+        prev_friends = cache.get(nid, [])
+
+        new_friends = [f for f in current_friends if f not in prev_friends]
+        for friend in new_friends:
+            date_str = (ev.get("date") or "")[:10]
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"🎉 {friend} is joining you for **{ev['name']}**{' on ' + date_str if date_str else ''}!",
+                parse_mode="Markdown",
+            )
+
+        if current_friends != prev_friends:
+            cache[nid] = current_friends
+            updated = True
+
+    if updated:
+        try:
+            cache_path.write_text(json.dumps(cache, indent=2))
+        except Exception:
+            pass
+
+
 def run_bot():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -702,6 +1001,7 @@ def run_bot():
     app.add_handler(CommandHandler("dashboard", dashboard_command))
     app.add_handler(CommandHandler("origin", origin_command))
     app.add_handler(CallbackQueryHandler(dashboard_callback, pattern=r"^dash:"))
+    app.add_handler(CallbackQueryHandler(handle_event_callback, pattern="^event_"))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -710,7 +1010,8 @@ def run_bot():
     job_queue = app.job_queue
     if job_queue:
         import datetime as dt
-        ET = dt.timezone(dt.timedelta(hours=-5))
+        from zoneinfo import ZoneInfo
+        ET = ZoneInfo("America/New_York")
 
         job_queue.run_daily(
             _scheduled_bonus_scan,
@@ -719,14 +1020,29 @@ def run_bot():
         )
         logger.info("Scheduled daily bonus scan at 8 AM ET")
 
-        # NYC event scan — Tuesdays (alert-only) + Fridays (full roundup) at 9 AM ET
+        # Daily event scan — 8:15 AM ET
         job_queue.run_daily(
-            _scheduled_event_scan,
-            days=(1, 4),  # 1=Tuesday, 4=Friday
-            time=dt.time(hour=9, minute=0, tzinfo=ET),
-            name="biweekly_event_scan",
+            lambda ctx: asyncio.create_task(run_event_scan_daily(ctx.bot, os.environ.get("TELEGRAM_CHAT_ID"))),
+            time=dt.time(hour=8, minute=15, tzinfo=ET),
+            name="daily_event_scan",
         )
-        logger.info("Scheduled NYC event scan Tue + Fri at 9 AM ET")
+        logger.info("Scheduled daily event scan at 8:15 AM ET")
+
+        # Post-event confirmation — 9:00 AM ET
+        job_queue.run_daily(
+            lambda ctx: asyncio.create_task(run_post_event_check(ctx.bot, os.environ.get("TELEGRAM_CHAT_ID"))),
+            time=dt.time(hour=9, minute=0, tzinfo=ET),
+            name="post_event_check",
+        )
+        logger.info("Scheduled post-event check at 9:00 AM ET")
+
+        # Friend RSVP poll — every 15 minutes
+        job_queue.run_repeating(
+            lambda ctx: asyncio.create_task(_poll_friend_rsvps(ctx.bot, os.environ.get("TELEGRAM_CHAT_ID"))),
+            interval=900,
+            name="friend_rsvp_poll",
+        )
+        logger.info("Scheduled friend RSVP poll every 15 minutes")
 
         # Health nudge — every morning at 7:30 AM ET (only sends if behind on goals)
         job_queue.run_daily(
@@ -759,6 +1075,31 @@ def run_bot():
             name="dinner_nudge",
         )
         logger.info("Scheduled dinner nudge at 7:30 PM ET")
+
+        # Workout reminder — 7:00 PM ET (silent if workout already logged today)
+        job_queue.run_daily(
+            _scheduled_workout_reminder,
+            time=dt.time(19, 0, 0, tzinfo=ET),
+            name="workout_reminder",
+        )
+        logger.info("Scheduled workout reminder at 7:00 PM ET")
+
+        # Weekly health report — Sunday 8 PM ET
+        job_queue.run_daily(
+            _scheduled_weekly_health_report,
+            time=dt.time(20, 0, 0, tzinfo=ET),
+            days=(6,),  # Sunday only
+            name="weekly_health_report",
+        )
+        logger.info("Scheduled weekly health report Sunday 8 PM ET")
+
+        # Monthly health report — daily at 9 AM ET (fires only on 1st of month)
+        job_queue.run_daily(
+            _scheduled_monthly_health_report,
+            time=dt.time(9, 0, 0, tzinfo=ET),
+            name="monthly_health_report",
+        )
+        logger.info("Scheduled monthly health report on 1st of month")
 
         # EOD wrap-up — 6 PM ET daily (calendar + email combined, silent if clean)
         job_queue.run_daily(
@@ -826,6 +1167,27 @@ def run_bot():
             name="daily_origin_refresh",
         )
         logger.info("Scheduled daily Origin Financial refresh at 8:15 AM ET")
+
+        # Reminder check — every 30 minutes
+        job_queue.run_repeating(
+            _scheduled_reminder_check,
+            interval=1800,  # 30 minutes
+            first=60,       # start 60s after bot launches
+            name="reminder_check",
+        )
+        logger.info("Scheduled reminder check every 30 minutes")
+
+        # Daily podcast — 8:30 AM ET (10-min grace window so a late bot start doesn't skip it)
+        job_queue.run_daily(
+            _scheduled_podcast,
+            time=dt.time(hour=8, minute=30, tzinfo=ET),
+            name="daily_podcast",
+            job_kwargs={"misfire_grace_time": 600},
+        )
+        logger.info("Scheduled daily podcast at 8:30 AM ET")
+
+    # Start podcast HTTP server (RSS feed + episode archive)
+    start_podcast_server()
 
     logger.info("Bot running. Send /start to your bot in Telegram.")
     app.run_polling(drop_pending_updates=True)

@@ -12,18 +12,19 @@ ROUTER_PROMPT = """You are a message classifier. Classify the user's message int
 
 - schedule_meeting     : scheduling, calendar, appointments, meetings
 - draft_email          : compose or send an email
-- create_task          : reminders, to-dos, follow-ups
+- create_task          : reminders, to-dos, task lists, "remind me", "add task", "show my tasks", "done #N", "delete task", "snooze reminder", "what do I need to do"
 - log_health           : weight, sleep, workouts, health data, workout suggestions, exercise routines, fitness advice, muscle group questions (e.g. "suggest a biceps workout", "give me a chest routine", "what should I do at the gym")
 - infusion_consulting  : hospital infusion ops, consulting leads, speaking opps
 - mortgage_notes       : mortgage notes, real estate, distressed notes, underwriting
 - investment_research  : stocks, portfolio, market ideas, investment analysis
 - travel_hack          : award flights, miles, travel deals, points optimization
-- nyc_events           : NYC events, meetups, networking, things to do
+- nyc_events           : NYC events, meetups, networking, things to do, what's happening tonight/this weekend, comedy shows, outdoor events, investor networking events, add event to calendar
 - personal_finance     : bank signup bonuses, credit card SUBs, budget tracking, spending, eligibility rules, Doctor of Credit, Frequent Miler, re-eligibility check, logging a new card/bank application, tax strategy, side hustle ideas, passive income, financial review, update financial profile
 - bonus_alert          : check for elevated bonuses, scan for deals, bonus alert status, force scan, check bonuses now
 - market_intel         : stock market analysis, sector rotation, macro view, earnings catalysts, specific stock/ETF ideas, market briefing, trade ideas, JP Morgan style analysis
 - daily_briefing       : morning briefing, summary, what's happening today
 - follow_up            : schedule a follow-up email or meeting in the future ("follow up with X in 3 days", "remind me to email Y next week about Z", "what follow-ups do I have", "cancel follow-up 2")
+- event_intake         : user pastes an event URL (starts with https://) to add to their events tracker
 - general_question     : anything else
 
 Return ONLY valid JSON. No commentary. No markdown. Example:
