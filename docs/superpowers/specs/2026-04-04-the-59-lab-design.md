@@ -22,10 +22,34 @@ A public community web app for discovering, sharing, and tracking NYC events —
 | Events database | Notion (shared with exec agent) | Free |
 | User profiles + RSVPs | Notion | Free |
 | Email notifications | Resend (3,000 emails/month free) | Free |
-| Event scraping | OpenGraph + JSON-LD in Vercel API routes | Free |
+| Event scraping (Submit tab) | OpenGraph + JSON-LD in Vercel API routes | Free |
 | Caching | Next.js ISR (`revalidate: 300`) | Free |
+| **Event discovery (daily scan)** | **GitHub Actions cron** | **Free** |
 
-**Exec agent integration:** Notion is the shared state layer. The exec agent reads/writes Notion independently. The website reads the same Notion DB. No direct HTTP calls between Vercel and the local exec agent.
+**Discovery pipeline:** A GitHub Actions workflow runs daily, scrapes event sources, and pushes new events to Notion. This runs on GitHub's infrastructure — independent of Justin's machine, always-on, auto-emails on failure. The website reads from Notion; it never scrapes proactively itself.
+
+**Exec agent integration:** Notion is the shared state layer. The exec agent is a *consumer* of Notion — it reads events already discovered by GitHub Actions, scores them for Justin's interests, and sends Telegram alerts + calendar adds. No direct HTTP calls between Vercel and the exec agent.
+
+### Discovery Pipeline (GitHub Actions)
+
+**Trigger:** Daily cron (`0 6 * * *` — 6 AM UTC / 2 AM ET). Also triggerable manually via `workflow_dispatch`.
+
+**Sources scraped:**
+- Luma (`lu.ma/nyc` and category feeds) — public JSON API
+- Eventbrite NYC — public API (`EVENTBRITE_API_KEY` env var in Actions secret)
+- Reddit: r/nycevents, r/newyorkcity, r/nyc, r/NYCsocialclub — public JSON API, no key needed
+- Tavily search — "NYC events this week" + category-specific queries (`TAVILY_API_KEY`)
+- Partiful public listings — OpenGraph fetch
+
+**Language:** Python (reuses patterns from exec agent scraping code)
+
+**Dedup:** Before pushing, check Notion for existing event with same RSVP link. Skip if found.
+
+**Price filter:** Skip events with parsed price > $80.
+
+**Output:** Each discovered event pushed to Notion Events DB with `Source` = scrape origin (e.g., `Luma`, `Reddit`, `Eventbrite`), `Status` = `Interested`.
+
+**On failure:** GitHub emails Justin automatically. No partial writes — each event push is independent (one failure doesn't block others).
 
 ---
 
