@@ -18,7 +18,7 @@ Each domain has a self-contained agent in `agents/`. Agents own their system pro
 `core/memory.py` uses local JSON files in `data/` as the primary datastore — always fast, always available, never blocked by network. Notion is synced asynchronously in the background and **fails silently** (fire-and-forget). The bot never waits on Notion; it just logs to local JSON and returns immediately.
 
 ### 4. Provider Abstraction
-`core/llm.py` wraps Groq, Ollama, and Anthropic behind a single `chat(system, user, max_tokens)` interface. Swap providers with one `.env` line. Vision (image analysis) uses Groq `llama-3.2-11b-vision` via a separate base64 image call pattern. All agents call `core.llm.chat` — none import provider SDKs directly (except the Anthropic fallback path in `llm.py`).
+`core/llm.py` wraps Groq, Ollama, and Anthropic behind a single `chat(system, user, max_tokens)` interface. Swap providers with one `.env` line. Vision (image analysis) uses Groq `meta-llama/llama-4-scout-17b-16e-instruct` via a separate base64 image call pattern. All agents call `core.llm.chat` — none import provider SDKs directly (except the Anthropic fallback path in `llm.py`).
 
 ### 5. Scheduled Proactive Intelligence
 APScheduler delivers 8 scheduled jobs at configured ET times without user prompting. This turns the bot from a reactive Q&A tool into an active executive assistant that briefs, nudges, and alerts autonomously. The scheduler runs inside the same process as the Telegram bot (via `job_queue`).
@@ -71,6 +71,7 @@ User sends voice OGG (Telegram)
 8:00 AM  → bonus_alert.run_bonus_scan()            → DoC, FM, Reddit scan
 8:05 AM  → followup_agent.run_pending_followups()  → Fire due follow-up emails/meetings
 8:10 AM  → email_agent.scan_and_triage_confirmations() → Booking emails → calendar events
+8:15 AM  → _scheduled_origin_refresh()             → Financial snapshot update
 6:00 PM  → calendar_agent.run_eod_calendar()       → EOD calendar recap
 6:00 PM  → email_agent.run_eod_email_summary()     → EOD email recap
 Tue/Fri 9 AM → social_agent.run_event_scan()       → NYC events roundup
@@ -83,6 +84,7 @@ Tue/Fri 9 AM → social_agent.run_event_scan()       → NYC events roundup
 ### Entry Point (`main.py`)
 - Loads `.env`, validates required keys, optionally runs in test mode
 - Calls `integrations/notion/client.repair_databases()` at startup (silent on fail)
+- Starts FastAPI web dashboard on port 8080 in a background thread
 - Starts Telegram bot + APScheduler via `run_bot()`
 
 ### Core Layer (`core/`)
@@ -124,6 +126,7 @@ Each agent exposes a `handle(message: str) -> str` function (plus optional sched
 | `google_sheets/client.py` | Webhook-based CC/bank application logging |
 | `notion/client.py` | Database CRUD + auto-schema enforcement |
 | `paperstac/scraper.py` | Playwright headless login + mortgage note listing extraction |
+| `web/server.py` | FastAPI dashboard (port 8080) — agent status views |
 
 ---
 
@@ -171,7 +174,7 @@ The `general_handler` passes **zero** personal context to the LLM — only the r
 
 ## Stack
 - Python 3.12, python-telegram-bot 20+, APScheduler (job_queue)
-- LLM: Groq (llama-3.3-70b) via `core/llm.py`; vision via Groq llama-3.2-11b-vision
+- LLM: Groq (llama-3.3-70b) via `core/llm.py`; vision via Groq meta-llama/llama-4-scout-17b-16e-instruct
 - TTS: edge-tts (en-US-AndrewNeural) with gTTS fallback
 - STT: Groq Whisper (whisper-large-v3)
 - Search: Tavily API
@@ -230,13 +233,20 @@ Logs: `logs/bot.log` and `logs/bot_error.log`
 | 8:00 AM | Bonus alert scan (DoC, Frequent Miner, Reddit) |
 | 8:05 AM | Follow-up check (fire due reminders) |
 | 8:10 AM | Confirmation email scan → auto-calendar |
+| 8:15 AM | Origin financial snapshot refresh |
 | Tue/Fri 9 AM | NYC event scan |
 | 6:00 PM | EOD wrap-up (calendar + email) |
 
 ## Photo Triage Pipeline
-1. Vision model classifies: food / event / receipt / document / screenshot / general
-2. Routes to: `_analyze_food_image` / `_handle_event_image` / `_handle_receipt_image` / etc.
-3. Event images → extract `CALENDAR_DATA:` JSON → auto-create Google Calendar event
+1. **Caption override** (fast path): regex checks caption for travel/market/infusion/mortgage keywords → routes directly
+2. **Vision triage** (fallback): Groq meta-llama/llama-4-scout-17b-16e-instruct classifies into 9 categories: `food`, `event`, `receipt`, `document`, `travel`, `market`, `infusion`, `mortgage`, `general`
+3. Routes to domain handler:
+   - `food` → `_analyze_food_image()` → nutrition estimate + `log_health()`
+   - `event` → `_handle_event_image()` → extract `CALENDAR_DATA:` JSON → auto-create Google Calendar event
+   - `receipt` → `_handle_receipt_image()` → parse expense + category
+   - `document` → `_handle_document_image()` → OCR + summarize
+   - `travel/market/infusion/mortgage` → respective agent-specific image prompts
+   - `general` → `_handle_general_image()`
 
 ## .env Required Keys
 ```
