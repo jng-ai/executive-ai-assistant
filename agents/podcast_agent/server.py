@@ -143,6 +143,42 @@ class PodcastHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
+def _start_cloudflare_tunnel(port: int):
+    """
+    Launch a Cloudflare Quick Tunnel in a background thread.
+    Requires `cloudflared` to be installed: brew install cloudflared
+    Logs the public HTTPS URL so you can add it to PODCAST_HOST in .env
+    for a persistent URL, use a named tunnel instead.
+    """
+    import subprocess, re as _re
+
+    def _run():
+        try:
+            proc = subprocess.Popen(
+                ["cloudflared", "tunnel", "--url", f"http://localhost:{port}"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            for line in proc.stdout:
+                line = line.strip()
+                m = _re.search(r"https://[a-z0-9\-]+\.trycloudflare\.com", line)
+                if m:
+                    url = m.group(0)
+                    logger.info(f"☁️  Cloudflare Tunnel active: {url}")
+                    logger.info(f"    RSS feed: {url}/feed.xml")
+                    logger.info(f"    Add to .env: PODCAST_HOST={url}")
+                    break  # found the URL, keep proc running but stop scanning
+            proc.wait()
+        except FileNotFoundError:
+            logger.info("cloudflared not found — skipping tunnel (install: brew install cloudflared)")
+        except Exception as e:
+            logger.warning(f"Cloudflare tunnel error: {e}")
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
+
 def start_server():
     """Start the podcast HTTP server in a daemon background thread. Fails silently if port in use."""
     try:
@@ -150,6 +186,11 @@ def start_server():
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         logger.info(f"Podcast server running on port {PORT} → http://localhost:{PORT}")
+
+        # If no static host is configured, auto-start a Cloudflare tunnel for external access
+        if not os.getenv("PODCAST_HOST"):
+            _start_cloudflare_tunnel(PORT)
+
         return server
     except OSError as e:
         logger.warning(f"Podcast server could not bind to port {PORT} ({e}) — skipping")

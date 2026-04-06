@@ -336,6 +336,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     response = await dispatch(intent, details, params, text)
 
+    # ── Podcast manual trigger ────────────────────────────────────────────────
+    if response == "__GENERATE_PODCAST__":
+        await update.message.reply_text(
+            "🎙 Generating today's Justin Brief — this takes ~2 minutes. I'll send it when it's ready.",
+            parse_mode="Markdown",
+        )
+        asyncio.create_task(
+            run_daily_podcast(bot=context.bot, chat_id=str(update.effective_chat.id))
+        )
+        return
+
     # ── Post-dispatch: track food logs for correction detection ───────────────
     if intent == "log_health" and response.startswith("✅ Logged:"):
         # Extract what was logged from the response (metric is after "Logged: *")
@@ -413,6 +424,9 @@ async def dispatch(intent: str, details: str, params: dict, raw: str) -> str:
 
     elif intent == "follow_up":
         return await asyncio.to_thread(followup_handle, raw)
+
+    elif intent == "generate_podcast":
+        return "__GENERATE_PODCAST__"
 
     elif intent == "daily_briefing":
         return await build_briefing()

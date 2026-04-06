@@ -24,6 +24,7 @@ ROUTER_PROMPT = """You are a message classifier. Classify the user's message int
 - market_intel         : stock market analysis, sector rotation, macro view, earnings catalysts, specific stock/ETF ideas, market briefing, trade ideas, JP Morgan style analysis
 - daily_briefing       : morning briefing, summary, what's happening today
 - follow_up            : schedule a follow-up email or meeting in the future ("follow up with X in 3 days", "remind me to email Y next week about Z", "what follow-ups do I have", "cancel follow-up 2")
+- generate_podcast     : generate podcast, create episode, make the justin brief, record today's show
 - event_intake         : user pastes an event URL (starts with https://) to add to their events tracker
 - general_question     : anything else
 

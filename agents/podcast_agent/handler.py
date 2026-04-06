@@ -166,5 +166,10 @@ async def run_daily_podcast(bot=None, chat_id: str = None):
 
 
 def handle(message: str) -> str:
-    """Handle manual trigger from Telegram (e.g. 'generate podcast')."""
-    return "Podcast generation triggered — check back in ~2 minutes for today's episode."
+    """
+    Handle manual trigger from Telegram (e.g. 'generate podcast').
+    Spawns generation in a background thread so Telegram gets an immediate ack.
+    The bot dispatcher will send the audio when it's ready.
+    Returns a sentinel so the caller knows to fire run_daily_podcast() async.
+    """
+    return "__GENERATE_PODCAST__"
