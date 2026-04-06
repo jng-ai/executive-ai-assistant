@@ -26,6 +26,7 @@ from agents.email_agent.handler import handle as email_handle, run_morning_diges
 from agents.followup_agent.handler import handle as followup_handle, run_pending_followups
 from agents.general_handler import handle_general
 from integrations.telegram.dashboard import build_main_dashboard, build_agent_dashboard
+from core import message_dedup
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -767,11 +768,16 @@ async def _scheduled_origin_refresh(context: ContextTypes.DEFAULT_TYPE):
                     if pct_match and float(pct_match.group(1)) > 120:
                         chat_id = os.environ.get("TELEGRAM_CHAT_ID")
                         if chat_id:
-                            await context.bot.send_message(
-                                chat_id=chat_id,
-                                text=f"⚠️ *Origin Budget Alert*\n{line.strip()}\n_Origin data refreshed — ask 'budget summary' for details._",
-                                parse_mode="Markdown",
-                            )
+                            alert_text = f"⚠️ *Origin Budget Alert*\n{line.strip()}\n_Origin data refreshed — ask 'budget summary' for details._"
+                            if message_dedup.is_duplicate("daily_origin_refresh", alert_text):
+                                logger.info("[Dedup] Skipping duplicate Origin budget alert")
+                            else:
+                                await context.bot.send_message(
+                                    chat_id=chat_id,
+                                    text=alert_text,
+                                    parse_mode="Markdown",
+                                )
+                                message_dedup.record_sent("daily_origin_refresh", alert_text)
                         break
                 except Exception:
                     pass
@@ -787,7 +793,11 @@ async def _scheduled_bonus_scan(context: ContextTypes.DEFAULT_TYPE):
         if "ALERT" in result or "elevated" in result.lower():
             chat_id = os.environ.get("TELEGRAM_CHAT_ID")
             if chat_id:
+                if message_dedup.is_duplicate("daily_bonus_scan", result):
+                    logger.info("[Dedup] Skipping duplicate bonus alert")
+                    return
                 await context.bot.send_message(chat_id=chat_id, text=result, parse_mode="Markdown")
+                message_dedup.record_sent("daily_bonus_scan", result)
     except Exception as e:
         logger.error(f"Scheduled bonus scan error: {e}")
 
@@ -799,7 +809,11 @@ async def _scheduled_health_nudge(context: ContextTypes.DEFAULT_TYPE):
         if result:
             chat_id = os.environ.get("TELEGRAM_CHAT_ID")
             if chat_id:
+                if message_dedup.is_duplicate("daily_health_nudge", result):
+                    logger.info("[Dedup] Skipping duplicate health nudge")
+                    return
                 await context.bot.send_message(chat_id=chat_id, text=result, parse_mode="Markdown")
+                message_dedup.record_sent("daily_health_nudge", result)
     except Exception as e:
         logger.error(f"Health nudge error: {e}")
 
@@ -822,10 +836,14 @@ async def _scheduled_eod_wrapup(context: ContextTypes.DEFAULT_TYPE):
         message = "\n\n".join(parts)
         chat_id = os.environ.get("TELEGRAM_CHAT_ID")
         if chat_id:
+            if message_dedup.is_duplicate("daily_eod_wrapup", message):
+                logger.info("[Dedup] Skipping duplicate EOD wrap-up")
+                return
             for i in range(0, len(message), 4000):
                 await context.bot.send_message(
                     chat_id=chat_id, text=message[i:i+4000], parse_mode="Markdown"
                 )
+            message_dedup.record_sent("daily_eod_wrapup", message)
     except Exception as e:
         logger.error(f"EOD wrap-up error: {e}")
 
@@ -852,9 +870,13 @@ async def _scheduled_calendar_briefing(context: ContextTypes.DEFAULT_TYPE):
         if result:
             chat_id = os.environ.get("TELEGRAM_CHAT_ID")
             if chat_id:
+                if message_dedup.is_duplicate("daily_calendar_briefing", result):
+                    logger.info("[Dedup] Skipping duplicate calendar briefing")
+                    return
                 await context.bot.send_message(
                     chat_id=chat_id, text=result, parse_mode="Markdown"
                 )
+                message_dedup.record_sent("daily_calendar_briefing", result)
     except Exception as e:
         logger.error(f"Calendar briefing error: {e}")
 
@@ -866,9 +888,13 @@ async def _scheduled_email_digest(context: ContextTypes.DEFAULT_TYPE):
         if result:
             chat_id = os.environ.get("TELEGRAM_CHAT_ID")
             if chat_id:
+                if message_dedup.is_duplicate("daily_email_digest", result):
+                    logger.info("[Dedup] Skipping duplicate email digest")
+                    return
                 await context.bot.send_message(
                     chat_id=chat_id, text=result, parse_mode="Markdown"
                 )
+                message_dedup.record_sent("daily_email_digest", result)
     except Exception as e:
         logger.error(f"Email digest error: {e}")
 
@@ -881,9 +907,13 @@ async def _scheduled_confirmation_scan(context: ContextTypes.DEFAULT_TYPE):
         if result:
             chat_id = os.environ.get("TELEGRAM_CHAT_ID")
             if chat_id:
+                if message_dedup.is_duplicate("daily_confirmation_scan", result):
+                    logger.info("[Dedup] Skipping duplicate confirmation scan result")
+                    return
                 await context.bot.send_message(
                     chat_id=chat_id, text=result, parse_mode="Markdown"
                 )
+                message_dedup.record_sent("daily_confirmation_scan", result)
     except Exception as e:
         logger.error(f"Confirmation scan error: {e}")
 
@@ -901,11 +931,14 @@ async def _scheduled_event_scan(context: ContextTypes.DEFAULT_TYPE):
         if result:
             chat_id = os.environ.get("TELEGRAM_CHAT_ID")
             if chat_id:
-                # Split if long
+                if message_dedup.is_duplicate("biweekly_event_scan", result):
+                    logger.info("[Dedup] Skipping duplicate event scan")
+                    return
                 for i in range(0, len(result), 4000):
                     await context.bot.send_message(
                         chat_id=chat_id, text=result[i:i+4000], parse_mode="Markdown"
                     )
+                message_dedup.record_sent("biweekly_event_scan", result)
     except Exception as e:
         logger.error(f"Scheduled event scan error: {e}")
 

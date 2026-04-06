@@ -163,8 +163,11 @@ def run_pending_followups() -> list[str]:
                 msg = _fire_email_followup(f)
             else:
                 msg = _fire_meeting_followup(f)
-            mark_done(f["id"])
-            results.append(msg)
+            fired = mark_done(f["id"])
+            if fired:
+                # Only report if we were the one to mark it done;
+                # a False return means another scheduler run already fired it.
+                results.append(msg)
         except Exception as e:
             results.append(f"⚠️ Follow-up #{f['id']} failed: {e}")
 
