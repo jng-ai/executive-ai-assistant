@@ -120,8 +120,10 @@ def _vision_call(image_b64: str, prompt: str, max_tokens: int = 600) -> str:
         api_key=os.environ.get("GROQ_API_KEY", ""),
         base_url="https://api.groq.com/openai/v1",
     )
+    # Use the current Groq vision-capable model (llama-3.2-11b-vision-preview was deprecated)
+    vision_model = os.environ.get("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
     resp = client.chat.completions.create(
-        model="llama-3.2-11b-vision-preview",
+        model=vision_model,
         max_tokens=max_tokens,
         messages=[{
             "role": "user",
@@ -222,24 +224,33 @@ def _analyze_food_image(image_b64: str, caption: str = "") -> str:
         "You are a nutrition coach for Justin Ngai, who is working to get from ~175 lbs to 165 lbs. "
         "His priorities: hit ~150g protein/day, stay in a moderate calorie deficit, build muscle.\n\n"
         f"This photo was sent at {meal_label} time — treat it as his {meal_label}.\n"
-        "Analyze this food photo carefully. Identify every item visible and estimate portions.\n\n"
         f"User note: {caption}\n\n"
+        "STEP 1 — Object Identification:\n"
+        "First, carefully scan the entire image and list every distinct food object or dish you can see "
+        "(e.g. bowl of rice, grilled chicken breast, side salad, glass of water, sauce cup).\n\n"
+        "STEP 2 — Ingredient Breakdown:\n"
+        "For each identified object, break it down into its likely ingredients and estimate portions "
+        "(e.g. 'Grilled chicken breast → ~6 oz chicken, seasoning/marinade').\n\n"
+        "STEP 3 — Nutrition & Coaching:\n"
+        "Using the ingredient breakdown, estimate macros and give coaching feedback.\n\n"
         "Reply using EXACTLY this format:\n\n"
         f"🍽 *{meal_label.capitalize()}: [Meal name — be specific]*\n\n"
+        "👁 *Objects Identified*\n"
+        "[Numbered list of every food item/dish visible in the photo]\n\n"
+        "🧩 *Ingredients Breakdown*\n"
+        "[For each object: likely ingredients + estimated portions]\n\n"
         "📊 *Nutrition Estimate*\n"
         "• Calories: ~[X] kcal\n"
         "• Protein: ~[X]g\n"
         "• Carbs: ~[X]g\n"
         "• Fat: ~[X]g\n"
         "• Fiber: ~[X]g\n\n"
-        "🔍 *What's in it*\n"
-        "[Each ingredient with portion + cal/protein estimate]\n\n"
         "✅ *Strengths* — [1-2 bullets: what this does well for Justin's goals]\n\n"
         "⚠️ *Watch out* — [1-2 bullets: sodium, hidden calories, portions]\n\n"
         "💡 *Coaching tip* — [One actionable suggestion for today's remaining meals]"
     )
     try:
-        result = _vision_call(image_b64, prompt, max_tokens=600)
+        result = _vision_call(image_b64, prompt, max_tokens=900)
         log_health("meal", result[:300], note=f"{meal_label} photo log")
         return f"{result}\n\n_📝 {meal_label.capitalize()} logged_"
     except Exception as e:
