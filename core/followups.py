@@ -6,6 +6,8 @@ The scheduler checks each morning and fires when due.
 
 import json
 import datetime
+import os
+import tempfile
 from pathlib import Path
 
 DATA_DIR = Path(__file__).parent.parent / "data"
@@ -23,8 +25,19 @@ def _load() -> list:
 
 
 def _save(data: list):
+    """Atomic write — temp file + os.replace() avoids partial-write corruption."""
     DATA_DIR.mkdir(exist_ok=True)
-    FOLLOWUPS_FILE.write_text(json.dumps(data, indent=2))
+    fd, tmp_path = tempfile.mkstemp(dir=DATA_DIR, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, FOLLOWUPS_FILE)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def add_followup(
@@ -66,9 +79,18 @@ def list_all_pending() -> list:
 
 
 def mark_done(followup_id: int) -> bool:
+    """Mark a follow-up as done.
+
+    Returns True only when the status was actually changed from "pending" → "done".
+    Returns False (without writing) if the follow-up was already done or cancelled,
+    so callers can detect and skip double-fires.
+    """
     followups = _load()
     for f in followups:
         if f["id"] == followup_id:
+            if f.get("status") != "pending":
+                # Already fired — idempotent guard, do NOT write again
+                return False
             f["status"] = "done"
             f["fired_at"] = datetime.datetime.now().isoformat()
             _save(followups)

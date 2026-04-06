@@ -376,8 +376,16 @@ def run_bonus_scan(force: bool = False) -> str:
     # Format alert message
     alert_msg = _format_alert(elevated_offers, baselines)
     if alert_msg:
+        # Content-hash dedup: don't resend if the alert text is identical to last send
+        import hashlib
+        alert_hash = hashlib.sha256(alert_msg.encode()).hexdigest()[:16]
+        if not force and last_alerts.get("last_alert_hash") == alert_hash:
+            _save_last_alerts(last_alerts)
+            return "✅ Alert already sent for these offers — content unchanged."
+
         _send_telegram_alert(alert_msg)
         last_alerts["last_alert"] = today
+        last_alerts["last_alert_hash"] = alert_hash
         last_alerts["last_offers"] = [o.get("card", "") for o in elevated_offers]
         _save_last_alerts(last_alerts)
         return alert_msg
