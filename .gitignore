@@ -5,8 +5,9 @@ __pycache__/
 venv/
 .venv/
 logs/
-data/*.json
-data/*.db
+data/
 *.log
 .DS_Store
 credentials/*.json
+.coverage
+.superpowers/

@@ -31,31 +31,23 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 LAST_ALERT_FILE = Path(__file__).parent.parent.parent / "data" / "bonus_alerts_sent.json"
 
 SOURCES = [
-    {
-        "name": "Doctor of Credit",
-        "url": "https://www.doctorofcredit.com/feed/",
-        "type": "rss",
-    },
-    {
-        "name": "Frequent Miler",
-        "url": "https://frequentmiler.com/feed/",
-        "type": "rss",
-    },
-    {
-        "name": "r/churning",
-        "url": "https://www.reddit.com/r/churning/search.json?q=elevated+offer+bonus&sort=new&restrict_sr=1&t=week&limit=15",
-        "type": "reddit",
-    },
-    {
-        "name": "r/churning weekly thread",
-        "url": "https://www.reddit.com/r/churning/new.json?limit=10",
-        "type": "reddit",
-    },
-    {
-        "name": "r/personalfinance",
-        "url": "https://www.reddit.com/r/personalfinance/search.json?q=bank+bonus+elevated&sort=new&restrict_sr=1&t=week&limit=10",
-        "type": "reddit",
-    },
+    # ── RSS feeds ───────────────────────────────────────────────────────────────
+    {"name": "Doctor of Credit",  "url": "https://www.doctorofcredit.com/feed/",   "type": "rss"},
+    {"name": "Frequent Miler",    "url": "https://frequentmiler.com/feed/",         "type": "rss"},
+    {"name": "NerdWallet",        "url": "https://www.nerdwallet.com/blog/feed/",   "type": "rss"},
+
+    # ── r/churning — broad searches, not just "elevated" ───────────────────────
+    {"name": "r/churning",        "url": "https://www.reddit.com/r/churning/search.json?q=bonus+offer+card&sort=new&restrict_sr=1&t=week&limit=20",    "type": "reddit"},
+    {"name": "r/churning news",   "url": "https://www.reddit.com/r/churning/search.json?q=news+update&sort=new&restrict_sr=1&t=week&limit=10",          "type": "reddit"},
+    {"name": "r/churning bank",   "url": "https://www.reddit.com/r/churning/search.json?q=bank+bonus&sort=new&restrict_sr=1&t=week&limit=10",           "type": "reddit"},
+
+    # ── r/CreditCards — where mainstream card launches get discussed ────────────
+    {"name": "r/CreditCards new", "url": "https://www.reddit.com/r/CreditCards/search.json?q=100k+bonus+OR+75k+bonus+OR+new+card+launch&sort=new&restrict_sr=1&t=week&limit=15", "type": "reddit"},
+    {"name": "r/CreditCards hot", "url": "https://www.reddit.com/r/CreditCards/hot.json?limit=15",  "type": "reddit_hot"},
+    {"name": "r/churning hot",    "url": "https://www.reddit.com/r/churning/hot.json?limit=10",     "type": "reddit_hot"},
+
+    # ── r/personalfinance for bank account bonuses ──────────────────────────────
+    {"name": "r/personalfinance", "url": "https://www.reddit.com/r/personalfinance/search.json?q=bank+bonus+$300+OR+$500+checking&sort=new&restrict_sr=1&t=week&limit=10", "type": "reddit"},
 ]
 
 # Known card name aliases → normalized name
@@ -128,8 +120,11 @@ def _fetch_rss(url: str, source_name: str) -> list[dict]:
         return []
 
 
-def _fetch_reddit(url: str, source_name: str) -> list[dict]:
-    """Fetch Reddit JSON API. Returns list of {title, summary, link}."""
+def _fetch_reddit(url: str, source_name: str, min_score: int = 0) -> list[dict]:
+    """
+    Fetch Reddit JSON API. Returns list of {title, summary, link}.
+    Includes post body (selftext) so the LLM can see card names mentioned in thread text.
+    """
     if not _requests:
         return []
     try:
@@ -142,26 +137,76 @@ def _fetch_reddit(url: str, source_name: str) -> list[dict]:
         for post in data.get("data", {}).get("children", []):
             d = post.get("data", {})
             title = d.get("title", "")
-            selftext = d.get("selftext", "")[:400]
+            # Include selftext so we capture card names mentioned in thread bodies
+            selftext = (d.get("selftext", "") or "")[:600]
             link = "https://reddit.com" + d.get("permalink", "")
             score = d.get("score", 0)
-            if score > 5 or "elevated" in title.lower() or "bonus" in title.lower():
-                items.append({"title": title, "summary": selftext, "link": link, "source": source_name})
+
+            # Always include if title mentions cards/bonuses; otherwise use score filter
+            bonus_keywords = ["bonus", "offer", "card", "points", "miles", "bank", "elevated",
+                              "100k", "75k", "80k", "chase", "amex", "citi", "capital one",
+                              "atmos", "bank of america", "bofA", "boa", "venture", "sapphire",
+                              "ink", "platinum", "gold", "new card", "launch"]
+            has_bonus_signal = any(kw in title.lower() for kw in bonus_keywords)
+
+            if score >= min_score or has_bonus_signal:
+                summary = selftext if selftext and selftext != "[removed]" else ""
+                items.append({"title": title, "summary": summary, "link": link, "source": source_name})
         return items
     except Exception as e:
         logger.error("Reddit fetch error (%s): %s", source_name, e)
         return []
 
 
+def _fetch_tavily_bonuses() -> list[dict]:
+    """Use Tavily to search for recent elevated credit card and bank bonuses."""
+    try:
+        from core.search import search
+        queries = [
+            "elevated credit card signup bonus offer 2026",
+            "best credit card welcome bonus March April 2026",
+            "bank account bonus promotion 2026",
+        ]
+        posts = []
+        for q in queries:
+            results = search(q, max_results=5)
+            for r in results:
+                posts.append({
+                    "title": r.get("title", ""),
+                    "summary": r.get("content", r.get("snippet", ""))[:400],
+                    "link": r.get("url", ""),
+                    "source": "Tavily Web Search",
+                })
+        return posts
+    except Exception as e:
+        logger.warning("Tavily bonus search failed: %s", e)
+        return []
+
+
 def _fetch_all_posts() -> list[dict]:
-    """Fetch posts from all sources."""
+    """Fetch posts from all sources including Tavily web search."""
     posts = []
     for source in SOURCES:
-        if source["type"] == "rss":
+        stype = source["type"]
+        if stype == "rss":
             posts += _fetch_rss(source["url"], source["name"])
-        elif source["type"] == "reddit":
-            posts += _fetch_reddit(source["url"], source["name"])
-    return posts
+        elif stype == "reddit":
+            # Search results — include anything with bonus signal regardless of score
+            posts += _fetch_reddit(source["url"], source["name"], min_score=0)
+        elif stype == "reddit_hot":
+            # Hot feed — include posts with score > 10 or bonus keywords
+            posts += _fetch_reddit(source["url"], source["name"], min_score=10)
+    # Supplement with Tavily search to catch announcements not yet in RSS
+    posts += _fetch_tavily_bonuses()
+    # Deduplicate by title
+    seen = set()
+    deduped = []
+    for p in posts:
+        key = p["title"][:60].lower().strip()
+        if key and key not in seen:
+            seen.add(key)
+            deduped.append(p)
+    return deduped
 
 
 def _get_historical_baselines() -> dict:
@@ -214,21 +259,50 @@ def _normalize_card_name(text: str) -> str | None:
     return None
 
 
-ANALYSIS_PROMPT = """You are a credit card and bank bonus expert. Analyze these recent posts/articles for ELEVATED signup bonuses.
+ANALYSIS_PROMPT = """You are a credit card and bank bonus expert for a churner/points optimizer. Analyze these recent posts for NOTABLE signup bonuses worth flagging.
 
-An elevated offer is when a card's current bonus is HIGHER than its historical/standard offer.
+Flag an offer as is_elevated=true if ANY of these are true:
+1. Current bonus is HIGHER than the card's usual/historical offer (even slightly elevated)
+2. New card launch with an unusually high intro bonus (≥75,000 points OR ≥$500 cash)
+3. Bank account bonus ≥$300
+4. Limited-time elevated offer with an expiration date
+5. A well-known card (Chase, Amex, Citi, Capital One, BofA) with any bonus above its known baseline
 
-For each elevated offer found, extract:
+Known baselines for comparison:
+- Chase Sapphire Preferred: 60k normal, 75k+ = elevated
+- Chase Sapphire Reserve: 60k normal, 75k+ = elevated
+- Amex Platinum: 80k normal, 100k+ = elevated
+- Amex Gold: 60k normal, 75k+ = elevated
+- Capital One Venture X: 75k normal, 90k+ = elevated
+- Capital One Venture: 75k normal (standalone $250 travel credit counts as elevated)
+- Citi Strata Premier / Citi Premier: 60k normal, 75k+ = elevated
+- Citi AAdvantage Platinum Select: 50k normal, 70k+ = elevated
+- Chase Ink Preferred: 90k normal, 100k+ = elevated
+- Chase Ink Cash / Unlimited: 75k normal, 90k+ = elevated
+- Marriott Bonvoy Boundless: 100k normal, 125k+ = elevated
+- Hilton Surpass / Aspire: 130k normal, 175k+ = elevated
+- Delta SkyMiles Gold / Platinum: 50k normal, 70k+ = elevated
+- United Explorer: 60k normal, 80k+ = elevated
+
+NEW cards launched in 2025-2026 (no historical baseline — flag all with any bonus):
+- Bank of America Atmos Rewards (any tier) — flag all offers
+- UBS Visa Infinite — flag all offers
+- Any card explicitly described as "new" or "just launched" with bonus ≥50k points or ≥$300
+
+For any other new card with no known history, flag if bonus ≥50k points or ≥$300 cash.
+
+For each offer found, extract:
 - Card/Bank name
-- Current bonus amount
-- Standard/historical bonus (if mentioned)
+- Current bonus amount (number only)
+- Standard/historical bonus if known (0 if unknown)
 - Min spend requirement
-- Expiration date (if known)
+- Expiration date (if known, else "?")
 - Source
+- 1-sentence summary
 
-Return JSON array. If no elevated offers found, return [].
+Return JSON array. If nothing noteworthy, return [].
 
-Example:
+Example output:
 [
   {
     "card": "Chase Sapphire Preferred",
@@ -374,19 +448,18 @@ def run_bonus_scan(force: bool = False) -> str:
 
     if not elevated_offers:
         _save_last_alerts(last_alerts)
-        return "✅ Bonus scan complete — no elevated offers found today."
+        return None  # nothing to report
 
     # Format alert message
     alert_msg = _format_alert(elevated_offers, baselines)
     if alert_msg:
-        _send_telegram_alert(alert_msg)
         last_alerts["last_alert"] = today
         last_alerts["last_offers"] = [o.get("card", "") for o in elevated_offers]
         _save_last_alerts(last_alerts)
-        return alert_msg
+        return alert_msg  # caller (scheduler or handle()) is responsible for sending
 
     _save_last_alerts(last_alerts)
-    return "✅ Scan complete — offers found but not alert-worthy vs baselines."
+    return None  # no noteworthy offers
 
 
 def handle(message: str) -> str:
@@ -394,7 +467,8 @@ def handle(message: str) -> str:
     msg_lower = message.lower()
 
     if any(w in msg_lower for w in ["force", "check now", "scan now", "rescan"]):
-        return run_bonus_scan(force=True)
+        result = run_bonus_scan(force=True)
+        return result or "✅ Scan complete — no elevated offers found right now."
 
     if any(w in msg_lower for w in ["status", "last", "when"]):
         alerts = _load_last_alerts()
@@ -412,4 +486,5 @@ def handle(message: str) -> str:
             f"_Say 'scan now' to force a fresh scan_"
         )
 
-    return run_bonus_scan(force=False)
+    result = run_bonus_scan(force=False)
+    return result or "✅ Already up to date — no new elevated offers."

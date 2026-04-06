@@ -35,7 +35,8 @@ import json
 import logging
 import datetime
 from core.llm import chat
-from core.memory import log_health, get_health_summary
+from core.memory import log_health, get_health_summary, update_last_food_log
+from core.learning import add_learning, format_for_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ TARGETS = {
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 
-SYSTEM = """You are Justin Ngai's personal health coach, trainer, and nutrition advisor.
+SYSTEM = """You are Justin Ngai's personal fitness coach, trainer, and nutrition advisor.
 
 Justin's profile:
 - Goal: get from ~175 lbs down to 165 lbs through sustainable habits
@@ -59,6 +60,13 @@ Justin's profile:
 - Sleep target: 7.5 hours/night
 - Workout target: 3–4x/week — gym (weights) + apartment pool (swimming)
 - Philosophy: consistency over perfection, whole foods, no crash dieting
+
+Your identity as his coach:
+- You actively track his muscle group history and ALWAYS suggest the next muscle group in rotation
+- You are opinionated — you tell him exactly what to train and why, not just options
+- You celebrate wins, flag recovery needs, and push him when he's coasting
+- You program with progressive overload in mind across sessions
+- If he's already trained a muscle group, you call it out and either redirect or adjust the session
 
 Coaching style:
 - Lead with what's actionable RIGHT NOW, not a recap of goals
@@ -74,11 +82,12 @@ Nutrition guidance:
 - Prioritize: protein first, then fiber, then overall calories
 
 Workout guidance:
-- Always check what muscle groups were recently trained — don't repeat them
-- Suggest swim days for active recovery between heavy lifts
+- ALWAYS check what muscle groups were recently trained — never repeat the same group two sessions in a row
+- The standard rotation is: Chest & Triceps (Push) → Back & Biceps (Pull) → Legs → Cardio/Swim
+- Suggest swim/cardio days for active recovery between heavy lifts
 - Format workouts: Exercise | Sets × Reps | Rest | Coaching tip
-- Default split: Push / Pull / Legs / Swim — rotate accordingly
-- For abs/core: program into end of every session"""
+- For abs/core: program into end of every lifting session
+- When user asks for a specific muscle group, design the full session around that group"""
 
 
 # ── Meal parsing prompt ────────────────────────────────────────────────────────
@@ -89,34 +98,63 @@ CRITICAL RULE: Only return is_log:true if the person is REPORTING something they
 Return is_log:false for ANY question, request, or correction — even if it mentions health topics.
 
 If the message IS a completed log, return:
-{"is_log": true, "metric": "<weight|sleep|workout|meal>", "value": "<extracted value>", "unit": "<lbs|hours|session|food log>"}
+{"is_log": true, "metric": "<weight|sleep|workout|meal|snack|drink>", "value": "<extracted value>", "unit": "<lbs|hours|session|food log|beverage log>"}
 
-Rules:
+Metric rules:
 - weight: extract number in lbs. Must be a plain weight statement.
 - sleep: calculate total hours from times given. "Slept 12:10am to 7:40am" = 7.5 hours
-- workout: ONLY if they clearly completed it. Value = description of what they did.
-- meal: ONLY food they actually ate. NOT corrections, questions, or future plans.
+- workout: ONLY if they clearly completed it TODAY or very recently (just now / this morning / earlier today).
+  Value = description of what they did.
+  Be permissive: "swimming today", "went to the pool", "hit the gym", "did some cardio",
+  "was at the gym", "just finished working out" all count as workout logs.
+  CRITICAL: If the message uses vague past timing like "recently", "the other day", "last week", "a few days ago",
+  or "I did X recently" WITHOUT a clear "today/this morning/just now" indicator → return is_log:false.
+  These are context statements for workout planning, NOT fresh logs.
+- meal: A full meal they ate (breakfast, lunch, dinner). NOT questions or future plans.
+- snack: A small bite between meals — protein bar, handful of nuts, fruit, chips, crackers, small food item.
+- drink: Any beverage — coffee, tea, juice, water, soda, alcohol, protein shake, smoothie, energy drink.
+  Note: a protein shake counts as drink if it's liquid, but log calories/protein in value.
+
+Disambiguation:
+- "had coffee" → drink
+- "grabbed a protein bar" → snack
+- "had a handful of almonds" → snack
+- "drank an orange juice" → drink
+- "had a beer" → drink
+- "had a protein shake" → drink
+- "ate a small apple" → snack
+- "had chips" → snack
+- "had chicken rice and cauliflower" → meal (full plate = meal)
+- "had a big salad with salmon" → meal
 
 Return is_log:false if the message:
 - Asks a question ("what should I...", "can I...", "how do I...")
 - Makes a request ("give me", "suggest", "help me", "recommend")
 - Is a correction ("it's not a meal", "I meant")
-- Mentions doing something AND asks what to do next (log only the done part if clear, else false)
 - Is ambiguous about whether it was completed
 
 Examples:
 "Slept from 12:10am to 7:40am" → {"is_log":true,"metric":"sleep","value":"7.5","unit":"hours"}
 "weight 174" → {"is_log":true,"metric":"weight","value":"174","unit":"lbs"}
 "swam 30 mins" → {"is_log":true,"metric":"workout","value":"swam 30 mins","unit":"session"}
-"I did 30min swimming laps" → {"is_log":true,"metric":"workout","value":"30min swimming laps","unit":"session"}
 "had chicken and rice" → {"is_log":true,"metric":"meal","value":"chicken and rice","unit":"food log"}
+"had a coffee with oat milk" → {"is_log":true,"metric":"drink","value":"coffee with oat milk","unit":"beverage log"}
+"grabbed a Kind bar" → {"is_log":true,"metric":"snack","value":"Kind bar","unit":"food log"}
+"drank a protein shake 40g protein" → {"is_log":true,"metric":"drink","value":"protein shake 40g protein","unit":"beverage log"}
+"had a handful of mixed nuts" → {"is_log":true,"metric":"snack","value":"handful of mixed nuts","unit":"food log"}
+"had a beer at happy hour" → {"is_log":true,"metric":"drink","value":"beer at happy hour","unit":"beverage log"}
+"swimming today" → {"is_log":true,"metric":"workout","value":"swimming","unit":"session"}
+"went to the pool" → {"is_log":true,"metric":"workout","value":"swimming at pool","unit":"session"}
+"hit the gym" → {"is_log":true,"metric":"workout","value":"gym session","unit":"session"}
+"was at the gym this morning" → {"is_log":true,"metric":"workout","value":"gym session","unit":"session"}
+"did some cardio" → {"is_log":true,"metric":"workout","value":"cardio","unit":"session"}
 "what should I eat" → {"is_log":false}
 "give me a workout" → {"is_log":false}
-"give me a quick workout routine I started some biceps already" → {"is_log":false}
-"It's sleep not meal" → {"is_log":false}
-"I did biceps today what should I do tomorrow" → {"is_log":true,"metric":"workout","value":"biceps","unit":"session"}
 "can I have pizza" → {"is_log":false}
-"give me some insight on that workout" → {"is_log":false}"""
+"give me some insight on that workout" → {"is_log":false}
+"I did back recently" → {"is_log":false}
+"I trained chest last week" → {"is_log":false}
+"I did legs the other day" → {"is_log":false}"""
 
 
 # ── Keyword sets ──────────────────────────────────────────────────────────────
@@ -129,7 +167,8 @@ WORKOUT_SUGGEST_KEYWORDS = [
 WORKOUT_TOPIC_KEYWORDS = [
     "workout", "exercise", "bicep", "tricep", "chest", "back", "shoulder",
     "leg", "squat", "deadlift", "pull", "push", "abs", "core", "cardio",
-    "swim", "hiit", "gym", "lift", "arms", "glute",
+    "swim", "hiit", "gym", "lift", "arms", "glute", "full body", "upper body",
+    "lower body", "forearm", "calf", "hamstring", "quad", "lats", "traps",
 ]
 WORKOUT_DONE_KEYWORDS = [
     "logged", "did", "completed", "finished", "swam", "ran", "lifted",
@@ -188,9 +227,14 @@ def _get_recent_workouts(days: int = 7) -> list:
     return [l for l in logs if l.get("metric") == "workout"]
 
 
+def _get_todays_food_logs() -> list:
+    """Return today's meal, snack, and drink logs."""
+    return [l for l in _get_todays_logs() if l.get("metric") in ("meal", "snack", "drink")]
+
+
 def _get_todays_meals() -> list:
-    """Return today's meal logs (text + photo)."""
-    return [l for l in _get_todays_logs() if l.get("metric") == "meal"]
+    """Return today's meal logs (text + photo). Includes snacks and drinks for nutrition balance."""
+    return _get_todays_food_logs()
 
 
 def parse_log(message: str) -> dict | None:
@@ -222,7 +266,7 @@ def _nutrition_balance_response(new_meal: str = "") -> str:
         return ""
 
     meal_descriptions = "\n".join(
-        f"- {m.get('note') or m.get('value', '')}" for m in meals
+        f"- [{m.get('metric','meal').upper()}] {m.get('note') or m.get('value', '')}" for m in meals
     )
     if new_meal:
         meal_descriptions += f"\n- {new_meal} (just logged)"
@@ -309,26 +353,241 @@ def _classify_workout_type(value: str) -> str | None:
     return None
 
 
+# Descriptive labels for each rotation slot — shown in reminder and suggestions
+_ROTATION_LABELS = {
+    "push": "Chest & Triceps",
+    "pull": "Back & Biceps",
+    "legs": "Legs (Quads / Hamstrings / Glutes)",
+    "swim": "Cardio / Swim",
+}
+
+
 def _next_rotation_type(recent_workouts: list[dict]) -> str:
     """
     Walk backwards through recent workout logs, find the last classifiable type,
     and return the NEXT type in the push→pull→legs→swim rotation.
-    Returns 'push' if no classifiable history.
+    Returns None if no classifiable history (caller should handle gracefully).
     """
     for log in reversed(recent_workouts):
         wtype = _classify_workout_type(log.get("value", ""))
         if wtype:
             idx = _ROTATION.index(wtype)
             return _ROTATION[(idx + 1) % len(_ROTATION)]
-    return _ROTATION[0]
+    return None  # No history — don't assume push
+
+
+# ── Muscle group detection ─────────────────────────────────────────────────────
+
+# Map of keyword → specific muscle group focus (overrides rotation when detected)
+_MUSCLE_FOCUS_MAP = {
+    "chest":      ("push",  "chest — bench press, flyes, cable crossovers"),
+    "pec":        ("push",  "chest — bench press, pec deck, dips"),
+    "tricep":     ("push",  "triceps — pushdowns, overhead extension, skull crushers"),
+    "shoulder":   ("push",  "shoulders — overhead press, lateral raises, front raises, face pulls"),
+    "delt":       ("push",  "shoulders — lateral raises, overhead press, rear delt flyes"),
+    "back":       ("pull",  "back — rows, pull-ups, lat pulldowns, deadlifts"),
+    "lat":        ("pull",  "lats — lat pulldowns, pull-ups, straight arm pushdowns"),
+    "trap":       ("pull",  "traps — shrugs, face pulls, rack pulls"),
+    "rhomboid":   ("pull",  "upper back — rows, face pulls, reverse flyes"),
+    "bicep":      ("pull",  "biceps — curls, hammer curls, chin-ups"),
+    "biceps":     ("pull",  "biceps — curls, hammer curls, chin-ups"),
+    "leg":        ("legs",  "legs — squats, leg press, Romanian deadlifts, lunges"),
+    "quad":       ("legs",  "quads — squats, leg press, leg extensions, lunges"),
+    "hamstring":  ("legs",  "hamstrings — Romanian deadlifts, lying leg curls, good mornings"),
+    "glute":      ("legs",  "glutes — hip thrusts, Bulgarian split squats, cable kickbacks"),
+    "calf":       ("legs",  "calves — standing calf raises, seated calf raises, jump rope"),
+    "squat":      ("legs",  "legs — squat-focused: back squat, front squat, goblet squat, lunges"),
+    "deadlift":   ("pull",  "posterior chain — deadlifts, RDLs, good mornings, rows"),
+    "upper body": ("push",  "upper body — push + pull supersets: bench, rows, shoulder press, curls"),
+    "lower body": ("legs",  "lower body — full leg day: squats, RDLs, lunges, hip thrusts, calves"),
+    "full body":  (None,    "full body — compound movements: squat, deadlift, bench, row, overhead press"),
+    "abs":        (None,    "core/abs — planks, cable crunches, hanging leg raises, Russian twists"),
+    "core":       (None,    "core — planks, ab wheel, cable crunches, dead bugs, L-sits"),
+    "forearm":    ("pull",  "forearms — wrist curls, reverse curls, farmer's walks, grip training"),
+    "swim":       ("swim",  "cardio swim — laps, kick drills, interval sets"),
+    "cardio":     ("swim",  "cardio — swimming laps, HIIT, cycling, rowing machine"),
+}
+
+
+# ── Exercise demo links ───────────────────────────────────────────────────────
+
+# Curated YouTube short IDs for common exercises (reliable form demos)
+_EXERCISE_DEMO_URLS = {
+    # Push — Chest
+    "bench press":            "https://youtu.be/rT7DgCr-3pg",
+    "incline bench":          "https://youtu.be/DbFgADa2PL8",
+    "incline dumbbell press": "https://youtu.be/DbFgADa2PL8",
+    "dumbbell flye":          "https://youtu.be/eozdVDA78K0",
+    "cable crossover":        "https://youtu.be/taI4XduLpTk",
+    "chest fly":              "https://youtu.be/taI4XduLpTk",
+    "pec deck":               "https://youtu.be/e8NG5T5YTRE",
+    "push up":                "https://youtu.be/_l3ySVKYVJ8",
+    "dip":                    "https://youtu.be/2z8JmcrW-As",
+    # Push — Shoulders
+    "overhead press":         "https://youtu.be/2yjwXTZQDDI",
+    "shoulder press":         "https://youtu.be/qEwKCR5JCog",
+    "lateral raise":          "https://youtu.be/FeJT_FgBXt0",
+    "front raise":            "https://youtu.be/sOt_qqCsRkc",
+    "face pull":              "https://youtu.be/HSoHeSjvIdU",
+    "rear delt fly":          "https://youtu.be/EA7u4Q_8HQ0",
+    "upright row":            "https://youtu.be/um3SX3fZHs4",
+    # Push — Triceps
+    "tricep pushdown":        "https://youtu.be/2-LAMcpzODU",
+    "overhead extension":     "https://youtu.be/YbX7Wd8jQ-Q",
+    "skull crusher":          "https://youtu.be/d_KZxkY_0cM",
+    "close grip bench":       "https://youtu.be/nEF0bv2FW94",
+    # Pull — Back
+    "pull up":                "https://youtu.be/eGo4IYlbE5g",
+    "chin up":                "https://youtu.be/7dphcZ4-TJk",
+    "lat pulldown":           "https://youtu.be/CAwf7n6Luuc",
+    "seated cable row":       "https://youtu.be/GZbfZ033f74",
+    "barbell row":            "https://youtu.be/kBWAon7ItDw",
+    "dumbbell row":           "https://youtu.be/pYcpY20QaE8",
+    "t-bar row":              "https://youtu.be/j3y8mR00JoM",
+    "straight arm pulldown":  "https://youtu.be/4tpIH50BSOY",
+    "deadlift":               "https://youtu.be/op9kVnSso6Q",
+    "romanian deadlift":      "https://youtu.be/hCDzSR6bW10",
+    "rdl":                    "https://youtu.be/hCDzSR6bW10",
+    # Pull — Biceps
+    "barbell curl":           "https://youtu.be/kwG2ipFRgfo",
+    "dumbbell curl":          "https://youtu.be/sAq_ocpRh_I",
+    "hammer curl":            "https://youtu.be/zC3nLlEvin4",
+    "preacher curl":          "https://youtu.be/fIWP-FRFNU0",
+    "incline curl":           "https://youtu.be/soxrZlIl35U",
+    "cable curl":             "https://youtu.be/NFzTWp2qpiE",
+    # Legs
+    "squat":                  "https://youtu.be/ultWZbUMPL8",
+    "front squat":            "https://youtu.be/uYumuL_G_V0",
+    "goblet squat":           "https://youtu.be/MeIiIdhvXT4",
+    "leg press":              "https://youtu.be/IZxyjW7MPJQ",
+    "lunge":                  "https://youtu.be/D7KaRcUTQeE",
+    "bulgarian split squat":  "https://youtu.be/2C-uNgKwPLE",
+    "leg extension":          "https://youtu.be/YyvSfVjQeL0",
+    "leg curl":               "https://youtu.be/1Tq3QdYUuHs",
+    "hip thrust":             "https://youtu.be/SEdqd1n0cvg",
+    "calf raise":             "https://youtu.be/-M4-G8p1fCI",
+    "good morning":           "https://youtu.be/YA-h3n9L4YU",
+    # Core
+    "plank":                  "https://youtu.be/pSHjTRCQxIw",
+    "ab wheel":               "https://youtu.be/DHFBUFPKhtM",
+    "cable crunch":           "https://youtu.be/ULlP9avvRfk",
+    "hanging leg raise":      "https://youtu.be/Pr1ieGZ5atk",
+    "russian twist":          "https://youtu.be/wkD8rjkodUI",
+    "dead bug":               "https://youtu.be/g_BYB0R-4Ws",
+    "crunch":                 "https://youtu.be/Xyd_fa5zoEU",
+}
+
+
+def _demo_link(exercise: str) -> str:
+    """Return a YouTube demo URL for the given exercise name."""
+    ex_lower = exercise.lower().strip()
+    # Exact match first
+    if ex_lower in _EXERCISE_DEMO_URLS:
+        return _EXERCISE_DEMO_URLS[ex_lower]
+    # Partial match
+    for key, url in _EXERCISE_DEMO_URLS.items():
+        if key in ex_lower or ex_lower in key:
+            return url
+    # Fallback: YouTube search
+    query = exercise.strip().replace(" ", "+") + "+form+tutorial"
+    return f"https://www.youtube.com/results?search_query={query}"
+
+
+def _inject_demo_links(workout_text: str) -> str:
+    """
+    Post-process a workout table response to add YouTube demo links to exercise names.
+    Turns "| Bench Press | 4 × 8 |..." into "| [Bench Press](url) | 4 × 8 |..."
+    """
+    import re
+    lines = workout_text.split("\n")
+    result = []
+    header_passed = False
+
+    for line in lines:
+        if not line.startswith("|"):
+            header_passed = False
+            result.append(line)
+            continue
+
+        cells = line.split("|")
+        # Skip header row (contains "Exercise") and separator row (contains "---")
+        if len(cells) < 3:
+            result.append(line)
+            continue
+        exercise_cell = cells[1].strip()
+        if not exercise_cell or "Exercise" in exercise_cell or "---" in exercise_cell:
+            result.append(line)
+            continue
+
+        # Strip any existing markdown link so we don't double-wrap
+        plain = re.sub(r"\[(.+?)\]\(.+?\)", r"\1", exercise_cell)
+        if plain:
+            url = _demo_link(plain)
+            cells[1] = f" [{plain}]({url}) "
+            line = "|".join(cells)
+        result.append(line)
+
+    return "\n".join(result)
+
+
+def extract_exercise_images(workout_text: str) -> list[tuple[str, str]]:
+    """
+    Parse exercise names from a workout table and return (name, thumbnail_url) pairs.
+    Only returns exercises that map to a real YouTube video (not search fallback).
+    Used by bot.py to send exercise demo photo album after a workout suggestion.
+    """
+    import re
+    results = []
+    seen: set[str] = set()
+
+    for line in workout_text.split("\n"):
+        if not line.startswith("|"):
+            continue
+        cells = line.split("|")
+        if len(cells) < 3:
+            continue
+        cell = cells[1].strip()
+        if not cell or "Exercise" in cell or "---" in cell:
+            continue
+
+        # Extract plain name from markdown link [Name](url) or raw text
+        m = re.match(r"\[(.+?)\]\(.+?\)", cell)
+        name = m.group(1).strip() if m else cell.strip()
+
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+
+        url = _demo_link(name)
+        # Only include real YouTube video links (not search fallback)
+        yt = re.search(r"youtu\.be/([A-Za-z0-9_-]+)", url)
+        if yt:
+            thumb = f"https://img.youtube.com/vi/{yt.group(1)}/hqdefault.jpg"
+            results.append((name, thumb))
+
+    return results
+
+
+def _detect_muscle_focus(message: str) -> tuple[str | None, str | None]:
+    """
+    Detect if the user is asking for a specific muscle group workout.
+    Returns (rotation_type_or_None, focus_description_or_None).
+    None means use rotation.
+    """
+    msg_lower = message.lower()
+    for keyword, (rtype, focus_desc) in _MUSCLE_FOCUS_MAP.items():
+        if keyword in msg_lower:
+            return rtype, focus_desc
+    return None, None
 
 
 # ── Workout suggestions ───────────────────────────────────────────────────────
 
 def _suggest_workout(message: str) -> str:
     """
-    Suggest next workout using push/pull/legs/swim rotation.
-    Enforces rotation deterministically — LLM cannot override the type.
+    Suggest a workout. Two modes:
+    1. Muscle group specified → design workout around that muscle group
+    2. No specific group → use push/pull/legs/swim rotation based on recent history
     """
     recent = _get_recent_workouts(days=7)
     week_logs = get_health_summary(7)
@@ -336,46 +595,105 @@ def _suggest_workout(message: str) -> str:
     count_this_week = len(workouts_this_week)
     remaining = max(0, TARGETS["workouts"]["goal"] - count_this_week)
 
-    next_type = _next_rotation_type(recent)
-
-    # Force swim if 3+ heavy lifts this week and no swim yet
-    heavy_lifts = sum(
-        1 for l in workouts_this_week
-        if _classify_workout_type(l.get("value", "")) in ("push", "pull", "legs")
-    )
-    swims_this_week = sum(
-        1 for l in workouts_this_week
-        if _classify_workout_type(l.get("value", "")) == "swim"
-    )
-    if heavy_lifts >= 3 and swims_this_week == 0:
-        next_type = "swim"
-
     if recent:
-        recent_desc = "\n".join(f"- {r.get('value','')}" for r in recent[-5:])
+        recent_desc = "\n".join(
+            f"- {r.get('date','')}: {r.get('value','')}" for r in recent[-7:]
+        )
         history_context = f"Recent workouts (last 7 days):\n{recent_desc}\n"
     else:
         history_context = "No workouts logged this week yet.\n"
 
-    prompt = (
-        f"{history_context}"
+    week_context = (
         f"This week: {count_this_week}/{TARGETS['workouts']['goal']} workouts done. "
         f"{remaining} more needed to hit goal.\n\n"
-        f"Justin's request: {message}\n\n"
-        f"REQUIRED WORKOUT TYPE: **{next_type.upper()}** — this is determined by the rotation schedule "
-        f"and CANNOT be changed. Design a {next_type} workout.\n\n"
-        "Rules:\n"
-        "- Rotation is Push → Pull → Legs → Swim. You MUST follow this.\n"
-        "- Include abs/core at the end of every lifting session\n"
-        "- Vary specific exercises (different chest movements each push day, etc.)\n\n"
-        "Format:\n"
-        "💪 *[Workout Name]* — [~X min]\n\n"
-        "| Exercise | Sets × Reps | Rest |\n"
-        "| --- | --- | --- |\n"
-        "| [exercise] | [X × X] | [Xs] |\n\n"
-        "📝 *Coaching tip:* [One focus point for today's session]\n"
-        "🎯 *Why this:* [One sentence on why this is the right next session]"
     )
-    return chat(SYSTEM, prompt, max_tokens=600)
+
+    # ── Check if user specified a muscle group ────────────────────────────────
+    req_type, focus_desc = _detect_muscle_focus(message)
+
+    if focus_desc:
+        # User asked for a specific muscle group
+        # Check if this group was already trained recently (warn but still deliver)
+        recently_trained = []
+        for log in recent[-3:]:
+            wt = _classify_workout_type(log.get("value", ""))
+            if req_type and wt == req_type:
+                recently_trained.append(log.get("date", "recently"))
+
+        recent_warning = ""
+        if recently_trained:
+            recent_warning = (
+                f"⚠️ Note: you trained {req_type} on {', '.join(recently_trained[-1:])} — "
+                f"consider adequate recovery. Designing the session as requested.\n\n"
+            )
+
+        prompt = (
+            f"{history_context}"
+            f"{week_context}"
+            f"Justin's request: {message}\n\n"
+            f"Design a focused *{focus_desc}* workout.\n\n"
+            f"{recent_warning}"
+            "Rules:\n"
+            "- Build the session around the requested muscle group(s)\n"
+            "- Use different exercises than what was done in recent sessions (vary stimulus)\n"
+            "- Include abs/core at the end of any lifting session\n"
+            "- Suggest 4–6 exercises with progressive overload in mind\n\n"
+            "Format (use exact exercise names so I can look up demo videos):\n"
+            "💪 *[Workout Name]* — [~X min]\n\n"
+            "| Exercise | Sets × Reps | Rest | Coaching tip |\n"
+            "| --- | --- | --- | --- |\n"
+            "| [exercise name] | [X × X] | [Xs] | [cue] |\n\n"
+            "📝 *Focus:* [One coaching point for this session]\n"
+            "⚠️ *Avoid:* [One thing to watch given recent training]"
+        )
+    else:
+        # No specific group — use rotation
+        next_type = _next_rotation_type(recent)
+
+        # Force swim if 3+ heavy lifts this week and no swim yet
+        heavy_lifts = sum(
+            1 for l in workouts_this_week
+            if _classify_workout_type(l.get("value", "")) in ("push", "pull", "legs")
+        )
+        swims_this_week = sum(
+            1 for l in workouts_this_week
+            if _classify_workout_type(l.get("value", "")) == "swim"
+        )
+        if heavy_lifts >= 3 and swims_this_week == 0:
+            next_type = "swim"
+
+        if next_type:
+            type_label = _ROTATION_LABELS.get(next_type, next_type.capitalize())
+            type_instruction = (
+                f"REQUIRED WORKOUT TYPE: **{type_label}** ({next_type} day) — determined by rotation.\n\n"
+                "Rules:\n"
+                "- Rotation is Chest & Triceps → Back & Biceps → Legs → Cardio/Swim.\n"
+                "- Use different exercises than what was done in recent sessions of the same type\n"
+                "- Include abs/core at the end of every lifting session\n"
+            )
+        else:
+            type_label = "Full Body or your choice"
+            type_instruction = (
+                "No workout history found — no rotation to follow.\n"
+                "Design a balanced full body session OR ask Justin what he wants to train.\n"
+                "Suggest: 'What do you feel like training — upper body, legs, or full body?'\n"
+            )
+
+        prompt = (
+            f"{history_context}"
+            f"{week_context}"
+            f"Justin's request: {message}\n\n"
+            f"{type_instruction}\n"
+            "Format (use exact exercise names so I can look up demo videos):\n"
+            "💪 *[Workout Name]* — [~X min]\n\n"
+            "| Exercise | Sets × Reps | Rest | Coaching tip |\n"
+            "| --- | --- | --- | --- |\n"
+            "| [exercise name] | [X × X] | [Xs] | [cue] |\n\n"
+            "📝 *Coaching tip:* [One focus point for today's session]\n"
+            "🎯 *Why this:* [Why this is the right next session based on your history]"
+        )
+    response = chat(SYSTEM, prompt, max_tokens=700)
+    return _inject_demo_links(response)
 
 
 # ── Goal progression ──────────────────────────────────────────────────────────
@@ -419,6 +737,39 @@ def _check_goal_progression() -> str:
     return ""
 
 
+# ── Food correction handler ───────────────────────────────────────────────────
+
+def handle_food_correction(correction_text: str, last_metric: str, last_value: str) -> str:
+    """
+    Handle a quantity/detail correction to the most recently logged food entry.
+    Updates the last food log entry in health.json and returns updated nutrition balance.
+    """
+    updated = update_last_food_log(correction_text)
+    if not updated:
+        return (
+            f"I don't see a recent {last_metric} log to update today.\n"
+            f"Try logging it again: e.g. _'{last_value}, {correction_text}'_"
+        )
+
+    new_value = updated.get("value", "")
+    metric = updated.get("metric", "meal")
+
+    # Record correction as a learning so future logs are more accurate
+    add_learning(
+        "health", "correction",
+        f"User corrected a {metric} log from '{last_value}' to '{new_value}'. "
+        "When logging food, wait for quantity confirmation before finalizing.",
+        source=correction_text,
+    )
+
+    type_emoji = {"meal": "🥗", "snack": "🍎", "drink": "☕"}.get(metric, "🥗")
+    balance = _nutrition_balance_response()
+    update_msg = f"✏️ *Updated {metric} log:*\n{type_emoji} _{new_value}_"
+    if balance:
+        update_msg += f"\n\n{balance}"
+    return update_msg
+
+
 # ── Main handler ──────────────────────────────────────────────────────────────
 
 def handle(message: str) -> str:
@@ -447,7 +798,13 @@ def handle(message: str) -> str:
         return chat(SYSTEM, context, max_tokens=400)
 
     # ── Pure workout suggestion ───────────────────────────────────────────────
-    if (has_suggest or has_topic) and not has_done and not has_insight:
+    # Route to suggest when:
+    #   a) User explicitly asks for a recommendation (has_suggest=True) — even if they
+    #      mention a past workout for context ("I did back recently, give me a workout")
+    #   b) User mentions a workout topic keyword with no past-tense completion marker
+    if has_suggest and has_topic:
+        return _suggest_workout(message)
+    if has_topic and not has_done and not has_insight:
         return _suggest_workout(message)
 
     # ── Try to parse as a log entry ───────────────────────────────────────────
@@ -506,30 +863,58 @@ def handle(message: str) -> str:
             else:
                 feedback = f"\n💪 {streak} — {remaining} more to go\n\n{insight}"
 
-        elif metric == "meal":
-            label = _meal_label()
-            # Generate nutrition insight for text-logged meals (same quality as photo handler)
-            insight_prompt = (
-                f"Justin just logged this {label.lower()}: {value}\n\n"
-                f"Estimate the nutrition for this meal. Be specific about portions if not stated.\n\n"
-                f"Format:\n"
-                f"📊 *Nutrition Estimate*\n"
-                f"• Calories: ~[X] kcal\n"
-                f"• Protein: ~[X]g\n"
-                f"• Carbs: ~[X]g\n"
-                f"• Fat: ~[X]g\n\n"
-                f"✅ *Strengths* — [1 bullet for his goals]\n"
-                f"⚠️ *Watch out* — [1 bullet if anything is off]\n"
-                f"💡 *Tip* — [One coaching note]"
-            )
-            meal_insight = chat(SYSTEM, insight_prompt, max_tokens=250)
-            feedback = f"\n🥗 *{label} logged*\n\n{meal_insight}"
-            # Running nutrition balance
+        elif metric in ("meal", "snack", "drink"):
+            label = _meal_label() if metric == "meal" else metric.capitalize()
+            type_emoji = {"meal": "🥗", "snack": "🍎", "drink": "☕"}.get(metric, "🥗")
+
+            if metric == "drink":
+                insight_prompt = (
+                    f"Justin just logged this drink: {value}\n\n"
+                    f"Estimate the nutrition. Note any calories, sugar, caffeine, or alcohol.\n\n"
+                    f"Format:\n"
+                    f"📊 *Nutrition Estimate*\n"
+                    f"• Calories: ~[X] kcal\n"
+                    f"• Protein: ~[X]g (if any)\n"
+                    f"• Sugar: ~[X]g (if applicable)\n"
+                    f"• Caffeine / Alcohol: [note if relevant]\n\n"
+                    f"💡 *Note* — [One coaching note relevant to his fat-loss / protein goals]"
+                )
+            elif metric == "snack":
+                insight_prompt = (
+                    f"Justin just logged this snack: {value}\n\n"
+                    f"Estimate nutrition. Snacks should ideally be high-protein or high-fiber for his goals.\n\n"
+                    f"Format:\n"
+                    f"📊 *Nutrition Estimate*\n"
+                    f"• Calories: ~[X] kcal\n"
+                    f"• Protein: ~[X]g\n"
+                    f"• Carbs: ~[X]g · Fat: ~[X]g\n\n"
+                    f"✅ *Good* — [1 bullet]\n"
+                    f"💡 *Better option* — [one higher-protein snack swap if applicable]"
+                )
+            else:
+                insight_prompt = (
+                    f"Justin just logged this {label.lower()}: {value}\n\n"
+                    f"Estimate the nutrition for this meal. Be specific about portions if not stated.\n\n"
+                    f"Format:\n"
+                    f"📊 *Nutrition Estimate*\n"
+                    f"• Calories: ~[X] kcal\n"
+                    f"• Protein: ~[X]g\n"
+                    f"• Carbs: ~[X]g\n"
+                    f"• Fat: ~[X]g\n\n"
+                    f"✅ *Strengths* — [1 bullet for his goals]\n"
+                    f"⚠️ *Watch out* — [1 bullet if anything is off]\n"
+                    f"💡 *Tip* — [One coaching note]"
+                )
+            food_insight = chat(SYSTEM, insight_prompt, max_tokens=250)
+            feedback = f"\n{type_emoji} *{label} logged*\n\n{food_insight}"
+            # Running nutrition balance (meals + snacks + drinks)
             nutrition = _nutrition_balance_response(new_meal=value)
             if nutrition:
                 feedback += f"\n\n{nutrition}"
 
-        log_response = f"✅ Logged: *{metric}*\n_{value}_{feedback}"
+        metric_label = {"meal": "Meal", "snack": "Snack", "drink": "Drink",
+                        "workout": "Workout", "weight": "Weight", "sleep": "Sleep"}.get(metric, metric.capitalize())
+        log_response = f"✅ Logged: *{metric_label}*\n_{value}_{feedback}"
 
         # If they also asked for next steps, answer that too
         if has_suggest and metric == "workout":
@@ -540,8 +925,18 @@ def handle(message: str) -> str:
 
     # ── Fallback: general health question ─────────────────────────────────────
     from core.conversation import get_history_for_llm
+    from core.learning import detect_and_save_preference
+
+    # Detect and persist any preferences stated in the message
+    detect_and_save_preference(message, "health")
+
     summary_data = get_health_summary(7)
-    context = f"Justin's recent health logs (7 days):\n{summary_data}\n\nQuestion: {message}"
+    learnings_ctx = format_for_prompt("health")
+    context = (
+        f"Justin's recent health logs (7 days):\n{summary_data}\n\n"
+        f"{learnings_ctx + chr(10) if learnings_ctx else ''}"
+        f"Question: {message}"
+    )
     history = get_history_for_llm(n=3)
     return chat(SYSTEM, context, max_tokens=400, history=history)
 
@@ -789,3 +1184,287 @@ def run_dinner_nudge() -> str:
 def run_breakfast_nudge() -> str:
     """Proactive 9:30 AM breakfast check-in. Silent if already logged."""
     return run_meal_nudge("breakfast")
+
+
+def _score_week(logs: list[dict]) -> dict:
+    """
+    Compute weekly metrics from health logs.
+    Returns dict with workout_count, workout_goal_pct, avg_sleep, avg_protein_est,
+    weight_start, weight_end, weight_delta, food_logs, snack_count, drink_count.
+    """
+    workouts = [l for l in logs if l.get("metric") == "workout"]
+    sleeps   = [float(l["value"]) for l in logs if l.get("metric") == "sleep" and _is_num(l["value"])]
+    weights  = [float(l["value"]) for l in logs if l.get("metric") == "weight" and _is_num(l["value"])]
+    meals    = [l for l in logs if l.get("metric") == "meal"]
+    snacks   = [l for l in logs if l.get("metric") == "snack"]
+    drinks   = [l for l in logs if l.get("metric") == "drink"]
+
+    workout_count = len(workouts)
+    workout_goal  = TARGETS["workouts"]["goal"]
+    workout_pct   = round(workout_count / workout_goal * 100)
+
+    avg_sleep = round(sum(sleeps) / len(sleeps), 1) if sleeps else None
+    weight_start = weights[0]  if weights else None
+    weight_end   = weights[-1] if weights else None
+    weight_delta = round(weight_end - weight_start, 1) if (weight_start and weight_end and len(weights) > 1) else None
+
+    return {
+        "workout_count": workout_count,
+        "workout_goal": workout_goal,
+        "workout_goal_pct": workout_pct,
+        "workouts": workouts,
+        "avg_sleep": avg_sleep,
+        "weight_start": weight_start,
+        "weight_end": weight_end,
+        "weight_delta": weight_delta,
+        "meal_count": len(meals),
+        "snack_count": len(snacks),
+        "drink_count": len(drinks),
+        "all_food": meals + snacks + drinks,
+    }
+
+
+def run_weekly_health_report() -> str:
+    """
+    Comprehensive weekly health report — sent Sunday evening.
+    Covers: workout goal met/missed, nutrition consistency, weight trend,
+    sleep average, and one key action for next week.
+    """
+    try:
+        today = datetime.date.today()
+        logs = get_health_summary(7)
+        if not logs:
+            return ""
+
+        s = _score_week(logs)
+        workout_emoji = "✅" if s["workout_count"] >= s["workout_goal"] else "⚠️"
+        sleep_emoji   = "✅" if (s["avg_sleep"] or 0) >= TARGETS["sleep"]["goal"] else "⚠️"
+
+        # Build workout type breakdown
+        workout_types = []
+        for w in s["workouts"]:
+            wt = _classify_workout_type(w.get("value", ""))
+            if wt:
+                workout_types.append(wt)
+        type_str = " · ".join(workout_types) if workout_types else "unclassified"
+
+        # Build food log summary for LLM
+        food_lines = "\n".join(
+            f"- [{l.get('metric','meal').upper()}] {l.get('note') or l.get('value','')}"
+            for l in s["all_food"]
+        ) or "No food logged this week."
+
+        weight_str = ""
+        if s["weight_end"]:
+            to_go = s["weight_end"] - TARGETS["weight"]["goal"]
+            weight_str = f"{s['weight_end']} lbs ({to_go:+.1f} lbs to 165 goal)"
+            if s["weight_delta"] is not None:
+                direction = "↓" if s["weight_delta"] < 0 else "↑"
+                weight_str += f" — {direction}{abs(s['weight_delta'])} lbs this week"
+
+        header = (
+            f"📊 *Weekly Health Report — Week of {today.strftime('%b %d, %Y')}*\n\n"
+            f"{workout_emoji} *Workouts:* {s['workout_count']}/{s['workout_goal']} "
+            f"({'goal met! 🔥' if s['workout_count'] >= s['workout_goal'] else str(s['workout_goal_pct']) + '% of goal'}) "
+            f"— {type_str}\n"
+        )
+        if s["avg_sleep"]:
+            header += f"{sleep_emoji} *Sleep:* avg {s['avg_sleep']}h/night (goal 7.5h)\n"
+        if weight_str:
+            header += f"⚖️ *Weight:* {weight_str}\n"
+        header += f"🥗 *Food logged:* {s['meal_count']} meals · {s['snack_count']} snacks · {s['drink_count']} drinks\n"
+
+        # LLM generates nutrition analysis + action item
+        llm_prompt = (
+            f"Weekly health data for Justin Ngai (goal: 165 lbs, 150g protein/day, 3-4 workouts/week, 7.5h sleep):\n\n"
+            f"Workouts this week: {s['workout_count']}/{s['workout_goal']} — types: {type_str}\n"
+            f"Avg sleep: {s['avg_sleep'] or 'not logged'}h\n"
+            f"Weight: {weight_str or 'not logged'}\n\n"
+            f"Food logged this week:\n{food_lines}\n\n"
+            f"Write a brief weekly health analysis with these sections:\n"
+            f"*🥗 Nutrition*\nWas protein likely adequate? Any patterns (too many snacks, low protein days, "
+            f"calorie-dense drinks)? Be specific about what he ate.\n\n"
+            f"*💪 Fitness*\nDid he hit his workout goal? Quality of sessions? Recovery balance?\n\n"
+            f"*⚖️ Progress*\nWeight/body composition trend. On track for 165 goal?\n\n"
+            f"*🎯 #1 Focus for Next Week*\nOne specific, actionable priority — not a list.\n\n"
+            f"Keep each section to 2-3 sentences. Phone-friendly. No fluff."
+        )
+        analysis = chat(SYSTEM, llm_prompt, max_tokens=500)
+
+        return f"{header}\n{analysis}"
+
+    except Exception as e:
+        logger.error("Weekly health report error: %s", e)
+        return ""
+
+
+def run_monthly_health_report() -> str:
+    """
+    Monthly health report — sent on the 1st of each month.
+    Covers 30-day trends: workout consistency %, weight trajectory,
+    nutrition patterns, sleep trend, and monthly grade.
+    """
+    try:
+        today = datetime.date.today()
+        last_month = today - datetime.timedelta(days=1)  # yesterday = last month end
+        logs = get_health_summary(30)
+        if not logs:
+            return ""
+
+        workouts = [l for l in logs if l.get("metric") == "workout"]
+        sleeps   = [float(l["value"]) for l in logs if l.get("metric") == "sleep" and _is_num(l["value"])]
+        weights  = [float(l["value"]) for l in logs if l.get("metric") == "weight" and _is_num(l["value"])]
+        meals    = [l for l in logs if l.get("metric") == "meal"]
+        snacks   = [l for l in logs if l.get("metric") == "snack"]
+        drinks   = [l for l in logs if l.get("metric") == "drink"]
+
+        # Workouts: goal is ~13-17 per month (3-4/week × 4.3 weeks)
+        monthly_workout_goal = round(TARGETS["workouts"]["goal"] * 4.3)
+        workout_pct = round(len(workouts) / monthly_workout_goal * 100)
+
+        avg_sleep = round(sum(sleeps) / len(sleeps), 1) if sleeps else None
+        weight_start = weights[0]  if weights else None
+        weight_end   = weights[-1] if weights else None
+        weight_delta = round(weight_end - weight_start, 1) if (weight_start and weight_end) else None
+
+        # Grade: A=90%+, B=75%, C=60%, D=50%, F=below
+        score = 0
+        score += 40 if workout_pct >= 90 else 30 if workout_pct >= 75 else 20 if workout_pct >= 60 else 10
+        score += 30 if (avg_sleep or 0) >= 7.5 else 20 if (avg_sleep or 0) >= 7.0 else 10
+        score += 30 if (weight_delta or 0) <= -0.5 else 20 if (weight_delta or 0) <= 0 else 10
+        grade = "A" if score >= 85 else "B" if score >= 70 else "C" if score >= 55 else "D"
+
+        workout_types = []
+        for w in workouts:
+            wt = _classify_workout_type(w.get("value", ""))
+            if wt:
+                workout_types.append(wt)
+        type_counts = {t: workout_types.count(t) for t in set(workout_types)}
+        type_str = " · ".join(f"{v}× {k}" for k, v in sorted(type_counts.items(), key=lambda x: -x[1]))
+
+        food_lines = "\n".join(
+            f"- [{l.get('metric','meal').upper()}] {l.get('note') or l.get('value','')}"
+            for l in (meals + snacks + drinks)[-30:]  # last 30 food entries
+        ) or "No food logged."
+
+        header = (
+            f"📅 *Monthly Health Report — {last_month.strftime('%B %Y')}*\n\n"
+            f"🏆 *Overall Grade: {grade}*\n\n"
+            f"💪 *Workouts:* {len(workouts)}/{monthly_workout_goal} target ({workout_pct}%) — {type_str or 'no type data'}\n"
+        )
+        if avg_sleep:
+            header += f"😴 *Sleep:* avg {avg_sleep}h (goal 7.5h)\n"
+        if weight_end:
+            to_go = weight_end - TARGETS["weight"]["goal"]
+            delta_str = f" ({weight_delta:+.1f} lbs this month)" if weight_delta is not None else ""
+            header += f"⚖️ *Weight:* {weight_end} lbs{delta_str} — {to_go:.1f} lbs to goal\n"
+        header += f"🥗 *Food logged:* {len(meals)} meals · {len(snacks)} snacks · {len(drinks)} drinks\n"
+
+        llm_prompt = (
+            f"Monthly health data for Justin Ngai (goal: 165 lbs, 150g protein/day, 3-4x/week workouts):\n\n"
+            f"Month: {last_month.strftime('%B %Y')}\n"
+            f"Workouts: {len(workouts)}/{monthly_workout_goal} ({workout_pct}%) — {type_str}\n"
+            f"Avg sleep: {avg_sleep or 'not logged'}h\n"
+            f"Weight start→end: {weight_start or '?'} → {weight_end or '?'} lbs\n"
+            f"Food log sample (last 30 entries):\n{food_lines}\n\n"
+            f"Write a monthly health debrief with:\n"
+            f"*📈 Month in Review* — 2-3 sentences on overall consistency and biggest win\n"
+            f"*🥗 Nutrition Patterns* — What eating patterns stand out? Enough protein? Too many drinks/snacks?\n"
+            f"*💪 Fitness Consistency* — Workout frequency, muscle group balance, any gaps in rotation?\n"
+            f"*⚖️ Body Composition* — Progress toward 165 goal, rate of change\n"
+            f"*🎯 Next Month Priority* — One specific focus area with a concrete target\n\n"
+            f"Be direct and specific. Phone-friendly. No generic advice."
+        )
+        analysis = chat(SYSTEM, llm_prompt, max_tokens=600)
+
+        return f"{header}\n{analysis}"
+
+    except Exception as e:
+        logger.error("Monthly health report error: %s", e)
+        return ""
+
+
+def run_workout_reminder() -> str:
+    """
+    7 PM ET daily check — did Justin log a workout today?
+    Silent if yes. Nudge with next recommended workout type if no.
+    """
+    try:
+        today = datetime.date.today().isoformat()
+        # Use 2 days to avoid off-by-one in get_health_summary cutoff
+        today_logs = get_health_summary(2)
+        worked_out_today = any(
+            l.get("metric") == "workout" and l.get("date") == today
+            for l in today_logs
+        )
+        if worked_out_today:
+            return ""  # Already logged — stay silent
+
+        # Check how many workouts this week
+        week_logs = get_health_summary(7)
+        workouts_this_week = [l for l in week_logs if l.get("metric") == "workout"]
+        count = len(workouts_this_week)
+        goal = TARGETS["workouts"]["goal"]
+        remaining = max(0, goal - count)
+
+        # What's next in the rotation?
+        recent = _get_recent_workouts(days=14)
+        next_type = _next_rotation_type(recent)
+
+        # Force swim if 3+ heavy lifts this week and no swim yet
+        heavy_lifts = sum(
+            1 for l in workouts_this_week
+            if _classify_workout_type(l.get("value", "")) in ("push", "pull", "legs")
+        )
+        swims_this_week = sum(
+            1 for l in workouts_this_week
+            if _classify_workout_type(l.get("value", "")) == "swim"
+        )
+        if heavy_lifts >= 3 and swims_this_week == 0:
+            next_type = "swim"
+
+        if remaining == 0:
+            return (
+                f"🏋️ *Evening check-in*\n\n"
+                f"You've hit your workout goal this week ({count}/{goal}) — "
+                f"but no session logged today. If you went, just say what you did!\n\n"
+                f"_e.g. 'did 30 min swim' or 'hit chest and triceps'_"
+            )
+
+        if next_type:
+            type_label = _ROTATION_LABELS.get(next_type, next_type.capitalize())
+            type_emoji = {"push": "🏋️", "pull": "💪", "legs": "🦵", "swim": "🏊"}.get(next_type, "💪")
+            # Map rotation type to overall session alternative
+            overall_alt = {
+                "push": "Upper Body",
+                "pull": "Upper Body",
+                "legs": "Lower Body",
+                "swim": "Full Body / Cardio",
+            }.get(next_type, "Full Body")
+            suggestion = (
+                f"{type_emoji} Based on your rotation, you could do:\n"
+                f"• *{type_label}* (muscle-focused)\n"
+                f"• *{overall_alt}* (overall session)\n"
+                f"• *Cardio / Swim* (active recovery)\n\n"
+                f"_Say what you want and I'll build the routine, or just log what you did._"
+            )
+        else:
+            suggestion = (
+                f"💪 No recent workout history — any session counts to start!\n\n"
+                f"Options:\n"
+                f"• *Upper Body* (chest, back, arms, shoulders)\n"
+                f"• *Lower Body* (quads, hamstrings, glutes, calves)\n"
+                f"• *Full Body* (compound movements)\n"
+                f"• *Cardio / Swim*\n\n"
+                f"_Say 'give me an upper body workout' or log what you did today._"
+            )
+
+        return (
+            f"🏋️ *Evening workout check-in*\n\n"
+            f"No workout logged today. You're at {count}/{goal} this week — "
+            f"{remaining} more to hit your goal.\n\n"
+            f"{suggestion}"
+        )
+    except Exception as e:
+        logger.warning("Workout reminder error: %s", e)
+        return ""

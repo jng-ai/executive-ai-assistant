@@ -365,8 +365,11 @@ async def _refresh_from_chrome_async() -> dict:
         snap = {}
         try:
             for key, url in _ORIGIN_PAGES.items():
-                await origin_page.goto(url, wait_until="networkidle", timeout=20000)
-                await origin_page.wait_for_timeout(3000)
+                # Use domcontentloaded — Origin is a React SPA with persistent WebSocket
+                # connections that never reach networkidle, causing 20s timeout
+                await origin_page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                # Wait for React to hydrate and render data (4s gives it enough time)
+                await origin_page.wait_for_timeout(4000)
                 text = await origin_page.evaluate("() => document.body.innerText")
                 snap[key + "_text"] = text[:5000]
                 logger.info("Origin CDP: captured %s (%d chars)", key, len(text))

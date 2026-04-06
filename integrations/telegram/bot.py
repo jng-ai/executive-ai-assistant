@@ -627,11 +627,10 @@ async def _scheduled_podcast(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _scheduled_bonus_scan(context: ContextTypes.DEFAULT_TYPE):
-    """Daily bonus alert scan — runs automatically at 8 AM."""
+    """Daily bonus alert scan — runs automatically at 8 AM. Silent if no elevated offers."""
     try:
         result = await asyncio.to_thread(run_bonus_scan, False)
-        # Only message if there are elevated offers (message will contain "ALERT")
-        if "ALERT" in result or "elevated" in result.lower():
+        if result:  # None means no elevated offers — stay silent
             chat_id = os.environ.get("TELEGRAM_CHAT_ID")
             if chat_id:
                 await context.bot.send_message(chat_id=chat_id, text=result, parse_mode="Markdown")
@@ -1187,5 +1186,23 @@ def run_bot():
     # Start podcast HTTP server (RSS feed + episode archive)
     start_podcast_server()
 
+    async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Suppress Conflict errors (another instance still releasing the session)."""
+        from telegram.error import Conflict
+        if isinstance(context.error, Conflict):
+            logger.warning("Telegram Conflict — another instance may still be releasing the session. Will retry.")
+            return  # Don't propagate; polling will retry automatically
+        logger.error("Unhandled bot error: %s", context.error, exc_info=context.error)
+
+    app.add_error_handler(_error_handler)
+
     logger.info("Bot running. Send /start to your bot in Telegram.")
-    app.run_polling(drop_pending_updates=True)
+    from telegram.error import Conflict as _TelegramConflict
+    import time as _time_mod
+    while True:
+        try:
+            app.run_polling(drop_pending_updates=True)
+            break
+        except _TelegramConflict:
+            logger.warning("Telegram Conflict — previous session still active. Waiting 35s before retry...")
+            _time_mod.sleep(35)

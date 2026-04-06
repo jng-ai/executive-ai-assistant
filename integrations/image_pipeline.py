@@ -41,7 +41,7 @@ def _vision_call(image_b64: str, prompt: str, max_tokens: int = 600) -> str:
         base_url="https://api.groq.com/openai/v1",
     )
     resp = client.chat.completions.create(
-        model="llama-3.2-11b-vision-instruct",   # -preview suffix is deprecated
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
         max_tokens=max_tokens,
         messages=[{
             "role": "user",

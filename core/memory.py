@@ -113,6 +113,25 @@ def log_health(metric: str, value: str, note: str = "", vs_target: str = "") -> 
     return entry
 
 
+def update_last_food_log(additional_info: str) -> dict | None:
+    """
+    Append correction/detail to the most recent meal/snack/drink log entry today.
+    Returns the updated entry, or None if no food log found today.
+    """
+    logs = _load(HEALTH_FILE)
+    today = datetime.date.today().isoformat()
+    food_metrics = {"meal", "snack", "drink"}
+    for i in range(len(logs) - 1, -1, -1):
+        entry = logs[i]
+        if entry.get("date") == today and entry.get("metric") in food_metrics:
+            old_value = entry.get("value", "")
+            entry["value"] = f"{old_value} ({additional_info})"
+            entry["corrected"] = datetime.datetime.now().isoformat()
+            _save(HEALTH_FILE, logs)
+            return entry
+    return None
+
+
 def get_health_summary(days: int = 7) -> list:
     logs = _load(HEALTH_FILE)
     cutoff = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
@@ -120,7 +139,10 @@ def get_health_summary(days: int = 7) -> list:
 
 
 def _unit_for(metric: str) -> str:
-    return {"weight": "lbs", "sleep": "hours", "workout": "session", "meal": "food log"}.get(metric, "")
+    return {
+        "weight": "lbs", "sleep": "hours", "workout": "session",
+        "meal": "food log", "snack": "food log", "drink": "beverage log",
+    }.get(metric, "")
 
 
 # ── Notes ──────────────────────────────────────────────────────────────────────
