@@ -67,12 +67,18 @@ def _generate_openai(text: str, output_path: str, api_key: str) -> str:
 
 def _generate_edge_tts(text: str, output_path: str) -> str:
     import edge_tts
+    import concurrent.futures
 
     async def _run():
         communicate = edge_tts.Communicate(text, EDGE_VOICE, rate=EDGE_RATE)
         await communicate.save(output_path)
 
-    asyncio.run(_run())
+    # Run in a fresh thread with its own event loop to avoid
+    # "asyncio.run() cannot be called from a running event loop"
+    # when called from within the Telegram bot's async context.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(asyncio.run, _run()).result()
+
     logger.info(f"edge-tts audio saved: {output_path}")
     return output_path
 
