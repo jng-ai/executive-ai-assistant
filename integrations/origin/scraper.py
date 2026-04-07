@@ -37,6 +37,7 @@ FORECAST_URL    = "https://app.useorigin.com/forecast"
 DATA_DIR        = Path(__file__).parent.parent.parent / "data"
 SNAPSHOT_FILE   = DATA_DIR / "origin_snapshot.json"
 COOKIES_FILE    = DATA_DIR / "origin_cookies.json"
+TOKENS_FILE     = DATA_DIR / "origin_tokens.json"
 
 
 def is_configured() -> bool:
@@ -93,6 +94,28 @@ def load_cookies() -> list:
 
 def cookies_exist() -> bool:
     return COOKIES_FILE.exists() and bool(load_cookies())
+
+
+def load_tokens() -> dict:
+    """Load saved Cognito localStorage tokens. Returns empty dict if not found."""
+    if not TOKENS_FILE.exists():
+        return {}
+    try:
+        return json.loads(TOKENS_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def save_tokens(tokens: dict) -> None:
+    """Persist Cognito tokens extracted from browser localStorage."""
+    DATA_DIR.mkdir(exist_ok=True)
+    TOKENS_FILE.write_text(json.dumps(tokens, indent=2))
+    logger.info("Origin: Cognito tokens saved to %s", TOKENS_FILE)
+
+
+def tokens_exist() -> bool:
+    t = load_tokens()
+    return bool(t.get("idToken") and t.get("accessToken"))
 
 
 def _is_login_page(text: str) -> bool:
@@ -300,14 +323,118 @@ async def _scrape_with_cookies_async() -> dict:
     return snapshot
 
 
+async def _scrape_with_tokens_async() -> dict:
+    """
+    Headless scrape using saved Cognito localStorage tokens.
+    Origin uses Sign In with Apple via Cognito — auth lives in localStorage, not cookies.
+    Injects the tokens before navigation so the React app sees an authenticated session.
+    """
+    from playwright.async_api import async_playwright
+
+    tokens = load_tokens()
+    if not tokens.get("idToken"):
+        return {"error": "no_tokens"}
+
+    prefix = f"CognitoIdentityServiceProvider.{tokens['clientId']}"
+    last_user = tokens["lastUser"]
+
+    snapshot = {}
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
+        ctx = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1440, "height": 900},
+        )
+
+        # Inject Cognito tokens into localStorage before any navigation
+        # by intercepting the first page load at the origin domain.
+        page = await ctx.new_page()
+
+        async def _inject_tokens(route, request):
+            await route.continue_()
+
+        await page.goto("https://app.useorigin.com/", wait_until="commit", timeout=20000)
+        await page.evaluate(f"""() => {{
+            localStorage.setItem('{prefix}.LastAuthUser', '{last_user}');
+            localStorage.setItem('{prefix}.{last_user}.idToken', `{tokens['idToken']}`);
+            localStorage.setItem('{prefix}.{last_user}.accessToken', `{tokens['accessToken']}`);
+            localStorage.setItem('{prefix}.{last_user}.refreshToken', `{tokens['refreshToken']}`);
+        }}""")
+
+        try:
+            for key, url in _ORIGIN_PAGES.items():
+                await page.goto(url, wait_until="networkidle", timeout=30000)
+                await page.wait_for_timeout(4000)
+                text = await page.evaluate("() => document.body.innerText")
+
+                if _is_login_page(text):
+                    logger.warning("Origin: token session expired — re-login required")
+                    await browser.close()
+                    return {"error": "session_expired"}
+
+                snapshot[key + "_text"] = text[:5000]
+                logger.info("Origin token-scrape: captured %s (%d chars)", key, len(text))
+
+            # Pull fresh tokens in case Cognito rotated them
+            fresh = await page.evaluate(f"""() => ({{
+                clientId: '{tokens["clientId"]}',
+                lastUser: localStorage.getItem('{prefix}.LastAuthUser'),
+                idToken: localStorage.getItem('{prefix}.{last_user}.idToken'),
+                accessToken: localStorage.getItem('{prefix}.{last_user}.accessToken'),
+                refreshToken: localStorage.getItem('{prefix}.{last_user}.refreshToken'),
+            }})""")
+            if fresh.get("idToken"):
+                save_tokens(fresh)
+
+            save_snapshot(snapshot)
+            logger.info("Origin: token-based scrape complete")
+        except Exception as e:
+            logger.error("Origin token-scrape error: %s", e)
+            snapshot["error"] = str(e)
+        finally:
+            await browser.close()
+
+    return snapshot
+
+
+def scrape_with_tokens() -> dict:
+    """
+    Primary daily refresh path — uses saved Cognito localStorage tokens.
+    Origin authenticates via Sign In with Apple/Cognito (localStorage-based),
+    so this is more reliable than cookie-based scraping.
+    """
+    if not tokens_exist():
+        logger.info("Origin: no saved tokens — visit Origin in browser and run /origin refresh")
+        return {"error": "no_tokens"}
+
+    try:
+        return asyncio.run(_scrape_with_tokens_async())
+    except RuntimeError:
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, _scrape_with_tokens_async()).result(timeout=120)
+    except Exception as e:
+        logger.error("Origin token scrape error: %s", e)
+        return {"error": str(e)}
+
+
 def scrape_with_cookies() -> dict:
     """
-    Autonomous scrape using saved session cookies — the primary daily refresh path.
-    No credentials or manual login required as long as cookies are valid.
-    Returns empty dict + logs a warning if cookies are missing or expired.
+    Fallback scrape using saved session cookies.
+    Tries token-based scrape first; falls back to cookies if no tokens saved.
     """
+    if tokens_exist():
+        return scrape_with_tokens()
+
     if not cookies_exist():
-        logger.info("Origin: no saved cookies — run /origin refresh from Chrome first")
+        logger.info("Origin: no saved cookies or tokens — re-login required")
         return {"error": "no_cookies"}
 
     try:
