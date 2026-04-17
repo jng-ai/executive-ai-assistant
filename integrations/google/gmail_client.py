@@ -225,12 +225,12 @@ def _extract_body(payload: dict) -> str:
     return ""
 
 
-def reply_to_email(thread_id: str, to: str, subject: str, body: str) -> bool:
+def reply_to_email(thread_id: str, to: str, subject: str, body: str, account: str = "primary") -> bool:
     """Send a reply within an existing email thread."""
-    if not is_configured():
+    if not is_configured(account):
         return False
     try:
-        svc = _service()
+        svc = _service(account)
         msg = MIMEText(body, "plain")
         msg["To"] = to
         msg["Subject"] = f"Re: {subject}" if not subject.startswith("Re:") else subject
